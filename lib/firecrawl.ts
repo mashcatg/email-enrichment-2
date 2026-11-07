@@ -17,6 +17,16 @@ const MAX_AUTOMATIC_RETRY_WAIT_MS = 120_000;
 let lastRequestStartedAt = 0;
 const RATE_LIMIT_STORAGE_KEY = "email-enrichment:last-firecrawl-request";
 
+export class FirecrawlRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "FirecrawlRequestError";
+    this.status = status;
+  }
+}
+
 export async function findWebsiteEmail(
   website: string,
   apiKey: string,
@@ -72,9 +82,12 @@ async function scrapeWithRetry(
       });
     } catch (error) {
       if (attempt === MAX_RETRIES) {
-        throw new Error(`Could not connect to Firecrawl: ${error instanceof Error ? error.message : "network error"}`);
+        throw new FirecrawlRequestError(
+          `Could not connect to Firecrawl: ${error instanceof Error ? error.message : "network error"}`,
+          0,
+        );
       }
-      await waitBeforeRetry(attempt, null, onProgress);
+      await waitBeforeRetry(attempt, null, 0, onProgress);
       continue;
     }
 
@@ -83,21 +96,24 @@ async function scrapeWithRetry(
       payload = (await response.json()) as FirecrawlScrapeResponse;
     } catch {
       if (isRetryableStatus(response.status) && attempt < MAX_RETRIES) {
-        await waitBeforeRetry(attempt, response.headers.get("Retry-After"), onProgress);
+        await waitBeforeRetry(attempt, response.headers.get("Retry-After"), response.status, onProgress);
         continue;
       }
-      throw new Error(`Firecrawl returned an unreadable response (${response.status}).`);
+      throw new FirecrawlRequestError(`Firecrawl returned an unreadable response (${response.status}).`, response.status);
     }
 
     if (response.ok && payload.success !== false) return payload;
     if (isRetryableStatus(response.status) && attempt < MAX_RETRIES) {
-      await waitBeforeRetry(attempt, response.headers.get("Retry-After"), onProgress);
+      await waitBeforeRetry(attempt, response.headers.get("Retry-After"), response.status, onProgress);
       continue;
     }
-    throw new Error(payload.error || `Firecrawl request failed (${response.status}).`);
+    throw new FirecrawlRequestError(
+      payload.error || `Firecrawl request failed (${response.status}).`,
+      response.status,
+    );
   }
 
-  throw new Error("Firecrawl request could not be completed after several retries.");
+  throw new FirecrawlRequestError("Firecrawl request could not be completed after several retries.", 0);
 }
 
 function isRetryableStatus(status: number): boolean {
@@ -124,11 +140,15 @@ async function waitForRequestSlot(): Promise<void> {
 async function waitBeforeRetry(
   attempt: number,
   retryAfterHeader: string | null,
+  status: number,
   onProgress: (message: string) => void,
 ): Promise<void> {
   const retryAfter = parseRetryAfter(retryAfterHeader);
   if (retryAfter !== null && retryAfter > MAX_AUTOMATIC_RETRY_WAIT_MS) {
-    throw new Error(`Firecrawl asked to wait ${formatWait(retryAfter)} before retrying. This row is saved; retry it later.`);
+    throw new FirecrawlRequestError(
+      `Firecrawl asked to wait ${formatWait(retryAfter)} before retrying. This row is saved; retry it later.`,
+      status,
+    );
   }
   const backoff = Math.min(1_000 * (2 ** (attempt + 1)), 30_000);
   const wait = Math.max(backoff, retryAfter ?? 0);

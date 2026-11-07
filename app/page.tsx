@@ -3,16 +3,20 @@
 import { ChangeEvent, DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseCsv, stringifyCsv } from "@/lib/csv";
 import { isValidEmailAddress } from "@/lib/email";
-import { findWebsiteEmail } from "@/lib/firecrawl";
+import { findWebsiteEmail, FirecrawlRequestError } from "@/lib/firecrawl";
 import { deleteProject, readProject, requestPersistentStorage, writeProject } from "@/lib/storage";
 import type { EnrichmentProject, EnrichmentRow, RowStatus } from "@/lib/types";
 
 type StatusFilter = "all" | RowStatus;
 
+const API_KEY_SESSION_KEY = "email-enrichment:firecrawl-api-key";
+const RUN_SESSION_KEY = "email-enrichment:run-active";
+
 export default function Home() {
   const [project, setProject] = useState<EnrichmentProject | null>(null);
   const projectRef = useRef<EnrichmentProject | null>(null);
   const [apiKey, setApiKey] = useState("");
+  const [isSessionRestored, setIsSessionRestored] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [isDragging, setIsDragging] = useState(false);
@@ -23,6 +27,20 @@ export default function Home() {
   const [notice, setNotice] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const shouldResumeRef = useRef(false);
+  const pauseRequestedRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      const savedApiKey = sessionStorage.getItem(API_KEY_SESSION_KEY);
+      if (savedApiKey) setApiKey(savedApiKey);
+      shouldResumeRef.current = sessionStorage.getItem(RUN_SESSION_KEY) === "true";
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not restore this browser session.");
+    } finally {
+      setIsSessionRestored(true);
+    }
+  }, []);
 
   const save = useCallback(async (next: EnrichmentProject) => {
     try {
@@ -203,13 +221,22 @@ export default function Home() {
       setNotice("There are no rows ready to enrich.");
       return;
     }
+    try {
+      sessionStorage.setItem(RUN_SESSION_KEY, "true");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not save the run state in this browser session.");
+      return;
+    }
+    pauseRequestedRef.current = false;
     setIsEnriching(true);
     setErrorMessage("");
     setNotice("");
     let succeeded = 0;
     let failed = 0;
+    let stopMessage: string | null = null;
     try {
       for (let index = 0; index < targets.length; index += 1) {
+        if (pauseRequestedRef.current) break;
         const row = targets[index];
         setCurrentRowId(row.id);
         setProgressMessage(`Website ${index + 1} of ${targets.length}`);
@@ -238,15 +265,53 @@ export default function Home() {
             status: "failed",
             error: error instanceof Error ? error.message : "An unexpected error occurred.",
           });
+          if (error instanceof FirecrawlRequestError && [0, 401, 402, 429, 500, 502, 503, 504].includes(error.status)) {
+            stopMessage = `${error.message} The batch stopped to avoid failing the remaining rows. Their progress is saved.`;
+            break;
+          }
         }
       }
-      setNotice(`Enrichment finished. ${succeeded} processed${failed ? `, ${failed} failed` : ""}.`);
+      if (stopMessage) {
+        setErrorMessage(stopMessage);
+        setNotice(`${succeeded} processed${failed ? `, ${failed} failed` : ""}; remaining rows were saved.`);
+      } else if (pauseRequestedRef.current) {
+        setNotice(`Paused. ${succeeded} processed${failed ? `, ${failed} failed` : ""}. Your progress is saved.`);
+      } else {
+        setNotice(`Enrichment finished. ${succeeded} processed${failed ? `, ${failed} failed` : ""}.`);
+      }
     } finally {
       setIsEnriching(false);
       setCurrentRowId(null);
       setProgressMessage("");
+      try {
+        sessionStorage.removeItem(RUN_SESSION_KEY);
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : "Could not clear the run state.");
+      }
     }
   };
+
+  const pauseEnrichment = () => {
+    pauseRequestedRef.current = true;
+    setNotice("Pausing after the current website finishes…");
+  };
+
+  const updateApiKey = (value: string) => {
+    setApiKey(value);
+    try {
+      if (value) sessionStorage.setItem(API_KEY_SESSION_KEY, value);
+      else sessionStorage.removeItem(API_KEY_SESSION_KEY);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not keep the API key for this browser session.");
+    }
+  };
+
+  useEffect(() => {
+    if (!isHydrated || !isSessionRestored || !project || !apiKey || !shouldResumeRef.current) return;
+    shouldResumeRef.current = false;
+    setNotice("Resuming the saved enrichment run…");
+    void enrichRows();
+  }, [apiKey, isHydrated, isSessionRestored, project]);
 
   const exportCsv = () => {
     if (!project) return;
@@ -284,6 +349,7 @@ export default function Home() {
   };
 
   const successPercent = counts.total ? Math.round((counts.complete / counts.total) * 100) : 0;
+  const estimatedMinutes = Math.ceil((counts.pending * 6.1) / 60);
 
   return (
     <main className="app-shell">
@@ -310,13 +376,13 @@ export default function Home() {
             <div className="step-number">01</div>
             <div>
               <h2>Connect your scraper</h2>
-              <p>Your key is used only in this browser session.</p>
+              <p>Kept in this tab session so a page refresh can resume your run.</p>
             </div>
           </div>
           <label className="field-label" htmlFor="api-key">FIRECRAWL API KEY</label>
           <div className="api-input-wrap">
             <span className="key-icon" aria-hidden="true">⌑</span>
-            <input id="api-key" type="password" autoComplete="off" placeholder="fc-••••••••••••••••••••••••" value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
+            <input id="api-key" type="password" autoComplete="off" placeholder="fc-••••••••••••••••••••••••" value={apiKey} onChange={(event) => updateApiKey(event.target.value)} />
             <span className="session-tag">SESSION ONLY</span>
           </div>
           <p className="privacy-note"><span aria-hidden="true">↗</span> Calls go directly from your browser to Firecrawl. No app server or database.</p>
@@ -377,11 +443,19 @@ export default function Home() {
                 <span className={`pulse-dot${isEnriching ? " is-running" : ""}`} />
                 <div>
                   <strong>{isEnriching ? "Enrichment in progress" : "Ready to find emails?"}</strong>
-                  <span>{isEnriching ? `${progressMessage} · Your progress saves automatically` : "Full page, including header and footer · paced to 10 requests/minute with automatic retries."}</span>
+                  <span>{isEnriching
+                    ? `${progressMessage} · Saved after each row; keep this tab open.`
+                    : `About ${estimatedMinutes} min for the remaining rows at 10 requests/minute. Refresh resumes this tab's run.`}</span>
                 </div>
               </div>
-              <button className="button button-primary" onClick={() => void enrichRows()} disabled={!apiKey.trim() || isEnriching || counts.pending === 0}>
-                {isEnriching ? <><span className="spinner" /> Working…</> : <>Enrich {counts.pending > 0 ? `${counts.pending} rows` : "list"} <span aria-hidden="true">→</span></>}
+              <button
+                className="button button-primary"
+                onClick={() => isEnriching ? pauseEnrichment() : void enrichRows()}
+                disabled={isEnriching ? pauseRequestedRef.current : !apiKey.trim() || counts.pending === 0}
+              >
+                {isEnriching
+                  ? pauseRequestedRef.current ? "Pausing…" : <>Pause after this row <span aria-hidden="true">Ⅱ</span></>
+                  : <>Enrich {counts.pending > 0 ? `${counts.pending} rows` : "list"} <span aria-hidden="true">→</span></>}
               </button>
             </div>
             {!apiKey.trim() && <p className="key-reminder">Add your Firecrawl API key above to start enriching.</p>}

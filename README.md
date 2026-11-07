@@ -33,14 +33,25 @@ Firecrawl's current Free plan allows 10 scrape requests per minute. Requests
 are therefore paced at no more than one every 6.1 seconds, with retries and
 exponential backoff for rate limits and temporary server errors. Firecrawl's
 `Retry-After` header is honored; if it requests a wait longer than two minutes,
-the row remains saved as failed and can be retried later.
+the row remains saved as failed and can be retried later. At the Free-plan
+pace, 400 websites take at least about 41 minutes, excluding scrape time and
+retries.
+
+The app saves each completed row. If the tab reloads during a run, it resumes
+automatically while the same browser tab session and API key are available.
+The key is held in that tab's `sessionStorage` (not sent to the app server).
+Keep the tab open and the computer awake during a run: a browser-only app
+cannot continue scraping while the browser is closed or the computer sleeps.
+Authentication, credit, rate-limit, and service-wide errors stop the batch
+instead of wasting time retrying every remaining row.
 
 ## Data and privacy
 
 The CSV and enrichment results are stored in this browser's IndexedDB so they
 survive reloads and closing the tab. They remain there after export until you
 select **Start over** or clear this browser's site data. There is no application
-backend or database. The Firecrawl API key stays in page memory for the current
-session; cleaned website domains are sent directly from the browser to Firecrawl.
+backend or database. The Firecrawl API key is stored only in the current tab's
+`sessionStorage` so a refresh can resume; cleaned website domains are sent
+directly from the browser to Firecrawl.
 The app also requests persistent browser storage where supported; browser
 storage clearing or private-browsing policies can still remove local data.
