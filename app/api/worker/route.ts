@@ -84,7 +84,12 @@ async function scrape(website: string, apiKey: string): Promise<string | null> {
       response = await fetch("https://api.firecrawl.dev/v2/scrape", {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ url, formats: ["markdown", "html"], onlyMainContent: false }),
+        body: JSON.stringify({
+          url,
+          formats: ["markdown", "html"],
+          onlyMainContent: false,
+          skipTlsVerification: true,
+        }),
         signal: controller.signal,
       });
     } catch (error) {

@@ -124,6 +124,11 @@ in-app alert is recorded, and its chunk is made available to another active
 key. Select **Resolved · re-enable key** only after fixing the key/account
 issue.
 
+Scrape requests bypass TLS certificate verification for target websites to
+allow sites with invalid or misconfigured certificates to be processed. This
+weakens protection against impersonated websites; use only when that tradeoff
+is acceptable.
+
 The analytics page reports job totals, chunk progress, key health, and alerts.
 It refreshes automatically; the enrichment worker does not depend on the page
 remaining open. Hosted scheduling depends on the Supabase Cron job and the
