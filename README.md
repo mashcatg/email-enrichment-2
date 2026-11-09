@@ -24,6 +24,7 @@ Set up a retention/cleanup policy if you do not want them retained.
 
 1. **Supabase:** create a project, apply
    [`supabase/migrations/20250201000000_hosted_enrichment.sql`](./supabase/migrations/20250201000000_hosted_enrichment.sql),
+   [`supabase/migrations/20261109180000_worker_cron_extensions.sql`](./supabase/migrations/20261109180000_worker_cron_extensions.sql),
    and create the `mashcatg@gmail.com` user in Supabase Auth with a password.
    Disable public sign-ups; the application only authorizes this account.
 2. **Supabase Storage:** apply
@@ -34,10 +35,57 @@ Set up a retention/cleanup policy if you do not want them retained.
    [`.env.example`](./.env.example). Set `FIRECRAWL_API_KEY_1` through
    `FIRECRAWL_API_KEY_10` to server environment variables only; never use
    `NEXT_PUBLIC_` for Firecrawl keys.
-4. Configure a Vercel plan that supports a one-minute Cron schedule and the
-   worker's 300-second function duration. [`vercel.json`](./vercel.json)
-   schedules `/api/worker` once a minute. Vercel sends the `CRON_SECRET` bearer
-   token to that endpoint.
+4. Vercel Hobby allows a 300-second function duration, but its Cron Jobs run
+   only once per day. The worker is scheduled by Supabase Cron instead, so no
+   Vercel Pro upgrade is needed.
+
+## Configure the hosted worker schedule
+
+After deploying the app to Vercel:
+
+1. In Supabase, open **Integrations → Vault** and add these secrets:
+   - `enrichment_worker_url`: the deployed app URL followed by `/api/worker`
+     (for example, `https://your-app.vercel.app/api/worker`).
+   - `enrichment_worker_cron_secret`: the same value as the Vercel
+     `CRON_SECRET` environment variable.
+2. In the Supabase SQL Editor, schedule the worker every five minutes:
+
+   ```sql
+   select cron.schedule(
+     'email-enrichment-worker',
+     '*/5 * * * *',
+     $job$
+     select net.http_post(
+       url := (
+         select decrypted_secret
+         from vault.decrypted_secrets
+         where name = 'enrichment_worker_url'
+       ),
+       headers := jsonb_build_object(
+         'Content-Type', 'application/json',
+         'Authorization', 'Bearer ' || (
+           select decrypted_secret
+           from vault.decrypted_secrets
+           where name = 'enrichment_worker_cron_secret'
+         )
+       ),
+       body := '{}'::jsonb,
+       timeout_milliseconds := 280000
+     );
+     $job$
+   );
+   ```
+
+   Running the same `cron.schedule` command again updates the existing job.
+   The worker processes in bounded batches and the next scheduled run continues
+   queued rows. It does not depend on the browser, tab, or Mac remaining open.
+3. Check that the job is scheduled:
+
+   ```sql
+   select jobname, schedule
+   from cron.job
+   where jobname = 'email-enrichment-worker';
+   ```
 
 For local development, use Node.js 20+, copy `.env.example` to `.env.local`,
 fill in the Supabase and Firecrawl values, then run:
@@ -78,5 +126,5 @@ issue.
 
 The analytics page reports job totals, chunk progress, key health, and alerts.
 It refreshes automatically; the enrichment worker does not depend on the page
-remaining open. Cron execution still depends on Vercel's plan/configuration and
-the deployed function being healthy.
+remaining open. Hosted scheduling depends on the Supabase Cron job and the
+deployed Vercel function being healthy.

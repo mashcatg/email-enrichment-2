@@ -249,7 +249,7 @@ async function runWorkerBatch() {
   const maxRpm = Math.min(600, Math.max(1, Number(process.env.FIRECRAWL_MAX_RPM) || 10));
   const requestInterval = Math.ceil(60_000 / maxRpm);
   const startedAt = Date.now();
-  const deadline = startedAt + 240_000;
+  const deadline = startedAt + 165_000;
   let processed = 0;
   let workerError: string | null = null;
 
@@ -268,6 +268,15 @@ async function runWorkerBatch() {
         });
         if (slotError) throw slotError;
         await wait(Number(waitMs) || 0);
+        if (Date.now() >= deadline) {
+          const { error: releaseError } = await supabase.from("enrichment_chunks").update({
+            state: "queued",
+            assigned_key_index: null,
+            lease_until: null,
+          }).eq("job_id", claim.job_id).eq("chunk_index", claim.chunk_index);
+          if (releaseError) throw releaseError;
+          return;
+        }
         await processClaim(supabase, claim);
         processed += 1;
       } catch (error) {
