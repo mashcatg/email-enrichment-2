@@ -14,4 +14,5 @@ export interface EnrichmentProject {
   emailColumnIndex: number;
   fileName: string;
   updatedAt: number;
+  jobId?: string;
 }

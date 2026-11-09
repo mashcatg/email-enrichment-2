@@ -1,46 +1,117 @@
 "use client";
 
-import { ChangeEvent, DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseCsv, stringifyCsv } from "@/lib/csv";
 import { isValidEmailAddress } from "@/lib/email";
-import { findWebsiteEmail, FirecrawlRequestError } from "@/lib/firecrawl";
 import { deleteProject, readProject, requestPersistentStorage, writeProject } from "@/lib/storage";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { EnrichmentProject, EnrichmentRow, RowStatus } from "@/lib/types";
 
 type StatusFilter = "all" | RowStatus;
 
-const API_KEY_SESSION_KEY = "email-enrichment:firecrawl-api-key";
-const RUN_SESSION_KEY = "email-enrichment:run-active";
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 250];
+const ACCOUNT_EMAIL = "mashcatg@gmail.com";
 
 export default function Home() {
   const [project, setProject] = useState<EnrichmentProject | null>(null);
   const projectRef = useRef<EnrichmentProject | null>(null);
-  const [apiKey, setApiKey] = useState("");
-  const [isSessionRestored, setIsSessionRestored] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [loginPassword, setLoginPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [jobStatus, setJobStatus] = useState<{
+    id: string;
+    status: string;
+    total_count: number;
+    completed_count: number;
+    found_count: number;
+    not_found_count: number;
+    failed_count: number;
+  } | null>(null);
+  const [keyAlerts, setKeyAlerts] = useState<Array<{ id: string; key_index: number; message: string }>>([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [pageSize, setPageSize] = useState(50);
+  const [currentPage, setCurrentPage] = useState(1);
   const [isDragging, setIsDragging] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
-  const [isEnriching, setIsEnriching] = useState(false);
-  const [currentRowId, setCurrentRowId] = useState<string | null>(null);
-  const [progressMessage, setProgressMessage] = useState("");
+  const [isSubmittingJob, setIsSubmittingJob] = useState(false);
   const [notice, setNotice] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const shouldResumeRef = useRef(false);
-  const pauseRequestedRef = useRef(false);
+  const appliedResultsForJobRef = useRef<string | null>(null);
 
   useEffect(() => {
+    let active = true;
     try {
-      const savedApiKey = sessionStorage.getItem(API_KEY_SESSION_KEY);
-      if (savedApiKey) setApiKey(savedApiKey);
-      shouldResumeRef.current = sessionStorage.getItem(RUN_SESSION_KEY) === "true";
+      const supabase = createSupabaseBrowserClient();
+      void (async () => {
+        try {
+          const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+          if (!active) return;
+          if (sessionError) throw sessionError;
+          if (!sessionData.session) {
+            setIsAuthenticated(false);
+            setAuthError("");
+            setAuthReady(true);
+            return;
+          }
+          const { data, error } = await supabase.auth.getUser();
+          if (error) throw error;
+          setIsAuthenticated(data.user?.email?.toLowerCase() === ACCOUNT_EMAIL);
+          setAuthError("");
+          setAuthReady(true);
+        } catch (error) {
+          if (!active) return;
+          setAuthError(error instanceof Error ? error.message : "Could not verify your login.");
+          setIsAuthenticated(false);
+          setAuthReady(true);
+        }
+      })();
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+        setIsAuthenticated(session?.user.email?.toLowerCase() === ACCOUNT_EMAIL);
+        if (!session) setAuthError("");
+      });
+      return () => {
+        active = false;
+        subscription.unsubscribe();
+      };
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Could not restore this browser session.");
-    } finally {
-      setIsSessionRestored(true);
+      setAuthError(error instanceof Error ? error.message : "Supabase authentication is not configured.");
+      setAuthReady(true);
     }
   }, []);
+
+  const signIn = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsSigningIn(true);
+    setAuthError("");
+    try {
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: ACCOUNT_EMAIL,
+        password: loginPassword,
+      });
+      if (error) throw error;
+      if (data.user?.email?.toLowerCase() !== ACCOUNT_EMAIL) {
+        await supabase.auth.signOut();
+        throw new Error(`Only ${ACCOUNT_EMAIL} is authorized.`);
+      }
+      setIsAuthenticated(true);
+      setLoginPassword("");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Could not sign in.");
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
+  const signOut = async () => {
+    const { error } = await createSupabaseBrowserClient().auth.signOut();
+    if (error) setErrorMessage(error.message);
+    else setIsAuthenticated(false);
+  };
 
   const save = useCallback(async (next: EnrichmentProject) => {
     try {
@@ -115,6 +186,128 @@ export default function Home() {
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    const jobId = project?.jobId;
+    if (!isAuthenticated || !jobId) {
+      setJobStatus(null);
+      return;
+    }
+    let active = true;
+    const refresh = async () => {
+      try {
+        const response = await fetch(`/api/jobs/${jobId}`, { cache: "no-store" });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "Could not read job progress.");
+        if (!active) return;
+        if (result.status === "completed" && appliedResultsForJobRef.current !== jobId) {
+          setJobStatus({ ...result, status: "running" });
+          const resultsResponse = await fetch(`/api/jobs/${jobId}/results`, { cache: "no-store" });
+          const resultBody = await resultsResponse.json();
+          if (!resultsResponse.ok) throw new Error(resultBody.error ?? "Could not retrieve completed results.");
+          const resultByRow = new Map<number, { email: string; status: RowStatus; error?: string }>(
+            resultBody.results.map((entry: { rowIndex: number; email: string; status: RowStatus; error?: string }) => [
+              entry.rowIndex,
+              { email: entry.email, status: entry.status, error: entry.error },
+            ]),
+          );
+          const latest = projectRef.current;
+          if (active && latest && latest.jobId === jobId) {
+            const rows = latest.rows.map((row, rowIndex) => {
+              const found = resultByRow.get(rowIndex);
+              if (!found) return row;
+              const cells = [...row.cells];
+              cells[latest.emailColumnIndex] = found.email;
+              return { ...row, cells, status: found.status, error: found.error };
+            });
+            await save({ ...latest, rows, updatedAt: Date.now() });
+            appliedResultsForJobRef.current = jobId;
+            setNotice("Enrichment finished. Results are saved locally and ready to export.");
+          }
+        }
+        if (active) setJobStatus(result);
+      } catch (error) {
+        if (active) setErrorMessage(error instanceof Error ? error.message : "Could not refresh job progress.");
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 10_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [isAuthenticated, project?.jobId, save]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let active = true;
+    const refreshAlerts = async () => {
+      try {
+        const response = await fetch("/api/analytics", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error ?? "Could not check key notifications.");
+        if (active) {
+          setKeyAlerts((data.notifications ?? []).filter((item: { resolved_at: string | null }) => !item.resolved_at));
+        }
+      } catch (error) {
+        if (active) setErrorMessage(error instanceof Error ? error.message : "Could not load notifications.");
+      }
+    };
+    void refreshAlerts();
+    const timer = window.setInterval(() => { void refreshAlerts(); }, 15_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (
+      process.env.NODE_ENV !== "development" ||
+      !isAuthenticated ||
+      !project?.jobId ||
+      !jobStatus ||
+      !["queued", "running"].includes(jobStatus.status)
+    ) return;
+    let active = true;
+    let retryTimer: number | undefined;
+    let retryDelay = 15_000;
+
+    const runLocalWorker = async () => {
+      try {
+        const response = await fetch("/api/worker", { method: "POST" });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "Local worker could not run.");
+        if (result.workerError) throw new Error(result.workerError);
+        retryDelay = result.processed === 0 ? 15_000 : 2_000;
+      } catch (error) {
+        retryDelay = 15_000;
+        if (active) {
+          setErrorMessage(error instanceof Error ? error.message : "Local worker could not run.");
+        }
+      } finally {
+        if (active) retryTimer = window.setTimeout(() => { void runLocalWorker(); }, retryDelay);
+      }
+    };
+
+    void runLocalWorker();
+    return () => {
+      active = false;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [isAuthenticated, jobStatus?.status, project?.jobId]);
+
+  const resolveKeyAlert = async (id: string) => {
+    try {
+      const response = await fetch(`/api/notifications/${id}/resolve`, { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not resolve this key alert.");
+      setKeyAlerts((alerts) => alerts.filter((alert) => alert.id !== id));
+      setNotice("Firecrawl key re-enabled. The worker will retry queued websites.");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not resolve this key alert.");
+    }
+  };
+
   const counts = useMemo(() => {
     const rows = project?.rows ?? [];
     return {
@@ -135,6 +328,17 @@ export default function Home() {
       return matchesStatus && matchesSearch;
     });
   }, [project, search, statusFilter]);
+  const pageCount = Math.max(1, Math.ceil(visibleRows.length / pageSize));
+  const safePage = Math.min(currentPage, pageCount);
+  const pageRows = visibleRows.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [pageSize, search, statusFilter]);
+
+  useEffect(() => {
+    if (currentPage > pageCount) setCurrentPage(pageCount);
+  }, [currentPage, pageCount]);
 
   const importFile = useCallback(async (file?: File) => {
     if (!file || !isHydrated) return;
@@ -185,6 +389,7 @@ export default function Home() {
       const persistent = await persistencePromise;
       setSearch("");
       setStatusFilter("all");
+      setCurrentPage(1);
       if (persistenceError) {
         setErrorMessage(`The CSV was saved locally, but persistent storage could not be enabled: ${persistenceError}`);
         setNotice("");
@@ -202,116 +407,40 @@ export default function Home() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [isHydrated, save]);
 
-  const updateRow = useCallback(async (id: string, patch: Partial<EnrichmentRow>) => {
-    const current = projectRef.current;
-    if (!current) return;
-    const next = {
-      ...current,
-      updatedAt: Date.now(),
-      rows: current.rows.map((row) => row.id === id ? { ...row, ...patch } : row),
-    };
-    await save(next);
-  }, [save]);
-
+  const isEnriching = isSubmittingJob || jobStatus?.status === "queued" ||
+    jobStatus?.status === "running" || jobStatus?.status === "waiting_for_keys";
   const enrichRows = async () => {
     const current = projectRef.current;
-    if (!current || !apiKey.trim() || isEnriching) return;
-    const targets = current.rows.filter((row) => ["pending", "failed", "not_found"].includes(row.status));
-    if (targets.length === 0) {
+    if (!current || isEnriching) return;
+    const entries = current.rows.flatMap((row, rowIndex) => {
+      if (!["pending", "failed", "not_found"].includes(row.status)) return [];
+      const website = row.cells[current.websiteColumnIndex]?.trim();
+      return website ? [{ rowIndex, website }] : [];
+    });
+    if (entries.length === 0) {
       setNotice("There are no rows ready to enrich.");
       return;
     }
-    try {
-      sessionStorage.setItem(RUN_SESSION_KEY, "true");
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Could not save the run state in this browser session.");
-      return;
-    }
-    pauseRequestedRef.current = false;
-    setIsEnriching(true);
+    setIsSubmittingJob(true);
     setErrorMessage("");
     setNotice("");
-    let succeeded = 0;
-    let failed = 0;
-    let stopMessage: string | null = null;
     try {
-      for (let index = 0; index < targets.length; index += 1) {
-        if (pauseRequestedRef.current) break;
-        const row = targets[index];
-        setCurrentRowId(row.id);
-        setProgressMessage(`Website ${index + 1} of ${targets.length}`);
-        const projectNow = projectRef.current;
-        if (!projectNow) break;
-        const currentRow = projectNow.rows.find((candidate) => candidate.id === row.id);
-        if (!currentRow) continue;
-        const website = currentRow.cells[projectNow.websiteColumnIndex]?.trim();
-        if (!website) {
-          await updateRow(row.id, { status: "missing_website", error: undefined });
-          continue;
-        }
-        await updateRow(row.id, { status: "running", error: undefined });
-        try {
-          const email = await findWebsiteEmail(website, apiKey.trim(), setProgressMessage);
-          const latest = projectRef.current;
-          if (latest) {
-            const cells = [...(latest.rows.find((candidate) => candidate.id === row.id)?.cells ?? currentRow.cells)];
-            cells[latest.emailColumnIndex] = email ?? "";
-            await updateRow(row.id, { cells, status: email ? "complete" : "not_found" });
-          }
-          succeeded += 1;
-        } catch (error) {
-          failed += 1;
-          await updateRow(row.id, {
-            status: "failed",
-            error: error instanceof Error ? error.message : "An unexpected error occurred.",
-          });
-          if (error instanceof FirecrawlRequestError && [0, 401, 402, 429, 500, 502, 503, 504].includes(error.status)) {
-            stopMessage = `${error.message} The batch stopped to avoid failing the remaining rows. Their progress is saved.`;
-            break;
-          }
-        }
-      }
-      if (stopMessage) {
-        setErrorMessage(stopMessage);
-        setNotice(`${succeeded} processed${failed ? `, ${failed} failed` : ""}; remaining rows were saved.`);
-      } else if (pauseRequestedRef.current) {
-        setNotice(`Paused. ${succeeded} processed${failed ? `, ${failed} failed` : ""}. Your progress is saved.`);
-      } else {
-        setNotice(`Enrichment finished. ${succeeded} processed${failed ? `, ${failed} failed` : ""}.`);
-      }
-    } finally {
-      setIsEnriching(false);
-      setCurrentRowId(null);
-      setProgressMessage("");
-      try {
-        sessionStorage.removeItem(RUN_SESSION_KEY);
-      } catch (error) {
-        setErrorMessage(error instanceof Error ? error.message : "Could not clear the run state.");
-      }
-    }
-  };
-
-  const pauseEnrichment = () => {
-    pauseRequestedRef.current = true;
-    setNotice("Pausing after the current website finishes…");
-  };
-
-  const updateApiKey = (value: string) => {
-    setApiKey(value);
-    try {
-      if (value) sessionStorage.setItem(API_KEY_SESSION_KEY, value);
-      else sessionStorage.removeItem(API_KEY_SESSION_KEY);
+      const response = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName: current.fileName, entries }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not start enrichment.");
+      appliedResultsForJobRef.current = null;
+      await save({ ...current, jobId: result.id, updatedAt: Date.now() });
+      setNotice(`Queued ${entries.length.toLocaleString()} websites across ${result.chunkCount} worker chunks.`);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Could not keep the API key for this browser session.");
+      setErrorMessage(error instanceof Error ? error.message : "Could not start enrichment.");
+    } finally {
+      setIsSubmittingJob(false);
     }
   };
-
-  useEffect(() => {
-    if (!isHydrated || !isSessionRestored || !project || !apiKey || !shouldResumeRef.current) return;
-    shouldResumeRef.current = false;
-    setNotice("Resuming the saved enrichment run…");
-    void enrichRows();
-  }, [apiKey, isHydrated, isSessionRestored, project]);
 
   const exportCsv = () => {
     if (!project) return;
@@ -349,7 +478,48 @@ export default function Home() {
   };
 
   const successPercent = counts.total ? Math.round((counts.complete / counts.total) * 100) : 0;
-  const estimatedMinutes = Math.ceil((counts.pending * 6.1) / 60);
+  const remainingCount = isEnriching && jobStatus
+    ? Math.max(0, jobStatus.total_count - jobStatus.completed_count)
+    : counts.pending;
+  const estimatedMinutes = Math.ceil((remainingCount * 6) / 60);
+  const jobPercent = jobStatus?.total_count
+    ? Math.round((jobStatus.completed_count / jobStatus.total_count) * 100)
+    : 0;
+
+  if (!authReady) {
+    return <main className="auth-shell"><p>Checking your secure sign-in…</p></main>;
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <main className="auth-shell">
+        <form className="auth-card" onSubmit={(event) => void signIn(event)}>
+          <a className="brand" href="#" aria-label="Enrich home">
+            <span className="brand-mark">e</span><span>enrich<span className="brand-dot">.</span></span>
+          </a>
+          <h1>Welcome back</h1>
+          <p>Sign in to your email enrichment workspace.</p>
+          <label className="field-label" htmlFor="account-email">ACCOUNT</label>
+          <input id="account-email" className="auth-input" value={ACCOUNT_EMAIL} readOnly />
+          <label className="field-label" htmlFor="account-password">PASSWORD</label>
+          <input
+            id="account-password"
+            className="auth-input"
+            type="password"
+            autoComplete="current-password"
+            value={loginPassword}
+            onChange={(event) => setLoginPassword(event.target.value)}
+            required
+          />
+          {authError && <p className="auth-error" role="alert">{authError}</p>}
+          <button className="button button-primary auth-submit" type="submit" disabled={isSigningIn}>
+            {isSigningIn ? "Signing in…" : "Sign in"}
+          </button>
+          <small>Password is configured for this account in Supabase Auth.</small>
+        </form>
+      </main>
+    );
+  }
 
   return (
     <main className="app-shell">
@@ -359,8 +529,10 @@ export default function Home() {
           <span>enrich<span className="brand-dot">.</span></span>
         </a>
         <div className="topbar-right">
-          <span className="local-pill"><span className="local-dot" /> Local workspace</span>
+          <a className="help-link" href="/analytics">Analytics</a>
+          <span className="local-pill"><span className="local-dot" /> Background worker</span>
           <a className="help-link" href="https://docs.firecrawl.dev/" target="_blank" rel="noreferrer">Firecrawl docs <span aria-hidden="true">↗</span></a>
+          <button className="text-button" onClick={() => void signOut()}>Sign out</button>
         </div>
       </header>
 
@@ -368,25 +540,30 @@ export default function Home() {
         <section className="intro">
           <div className="eyebrow"><span className="eyebrow-line" /> EMAIL ENRICHMENT</div>
           <h1>Find the right<br /><span>way to reach them.</span></h1>
-          <p>Bring your website list. We’ll find the best public contact email and add it to your CSV.</p>
+          <p>Upload a CSV. Server-side Firecrawl workers process it while you’re away, and results merge into your local CSV.</p>
         </section>
 
         <section className="setup-card" aria-label="Enrichment setup">
           <div className="section-heading">
             <div className="step-number">01</div>
             <div>
-              <h2>Connect your scraper</h2>
-              <p>Kept in this tab session so a page refresh can resume your run.</p>
+              <h2>Firecrawl worker pool</h2>
+              <p>API keys are configured on the server and never exposed to the browser.</p>
             </div>
           </div>
-          <label className="field-label" htmlFor="api-key">FIRECRAWL API KEY</label>
-          <div className="api-input-wrap">
-            <span className="key-icon" aria-hidden="true">⌑</span>
-            <input id="api-key" type="password" autoComplete="off" placeholder="fc-••••••••••••••••••••••••" value={apiKey} onChange={(event) => updateApiKey(event.target.value)} />
-            <span className="session-tag">SESSION ONLY</span>
+          <div className="worker-summary">
+            <span className="status-indicator" />
+            <span>10 protected key slots · globally rate-limited · durable job queue</span>
+            <a href="/analytics">View worker health →</a>
           </div>
-          <p className="privacy-note"><span aria-hidden="true">↗</span> Calls go directly from your browser to Firecrawl. No app server or database.</p>
         </section>
+
+        {keyAlerts.map((alert) => (
+          <section className="key-alert" key={alert.id} role="alert">
+            <div><strong>Firecrawl key {alert.key_index} paused</strong><span>{alert.message}</span></div>
+            <button className="button button-quiet" onClick={() => void resolveKeyAlert(alert.id)}>Resolved · re-enable key</button>
+          </section>
+        ))}
 
         {!project ? (
           <section className="upload-section" aria-label="Upload CSV">
@@ -410,7 +587,7 @@ export default function Home() {
               <input ref={fileInputRef} type="file" accept=".csv,text/csv" onChange={onFileChange} hidden />
               <span className="upload-icon" aria-hidden="true"><span>↑</span></span>
               <strong>Drop your CSV here, or <span>browse files</span></strong>
-              <small>CSV files only · Your data never leaves this browser except for website URLs sent to Firecrawl</small>
+              <small>CSV files only · Full CSV stays in this browser; only row numbers and websites are sent to the job queue.</small>
             </div>
           </section>
         ) : (
@@ -429,12 +606,12 @@ export default function Home() {
 
             <div className="stats-grid">
               <div className="stat-card"><span className="stat-label">TOTAL ROWS</span><strong>{counts.total.toLocaleString()}</strong><span className="stat-caption">in your list</span></div>
-              <div className="stat-card"><span className="stat-label">EMAILS FOUND</span><strong>{counts.complete.toLocaleString()}</strong><span className="stat-caption">ready to export</span></div>
-              <div className="stat-card"><span className="stat-label">TO ENRICH</span><strong>{counts.pending.toLocaleString()}</strong><span className="stat-caption">pending or retryable</span></div>
+              <div className="stat-card"><span className="stat-label">EMAILS FOUND</span>              <strong>{(jobStatus?.found_count ?? counts.complete).toLocaleString()}</strong><span className="stat-caption">ready to export after sync</span></div>
+              <div className="stat-card"><span className="stat-label">{isEnriching ? "REMAINING" : "TO ENRICH"}</span><strong>{remainingCount.toLocaleString()}</strong><span className="stat-caption">{isEnriching ? "in the active job" : "pending or retryable"}</span></div>
               <div className="stat-card progress-stat">
                 <span className="stat-label">COMPLETION</span>
-                <strong>{successPercent}<span className="percent-sign">%</span></strong>
-                <div className="progress-track"><span style={{ width: `${successPercent}%` }} /></div>
+                <strong>{jobStatus ? jobPercent : successPercent}<span className="percent-sign">%</span></strong>
+                <div className="progress-track"><span style={{ width: `${jobStatus ? jobPercent : successPercent}%` }} /></div>
               </div>
             </div>
 
@@ -442,26 +619,23 @@ export default function Home() {
               <div className="enrich-copy">
                 <span className={`pulse-dot${isEnriching ? " is-running" : ""}`} />
                 <div>
-                  <strong>{isEnriching ? "Enrichment in progress" : "Ready to find emails?"}</strong>
+                  <strong>{isEnriching ? (jobStatus?.status === "waiting_for_keys" ? "Waiting for an active key" : "Enrichment running on server") : "Ready to find emails?"}</strong>
                   <span>{isEnriching
-                    ? `${progressMessage} · Saved after each row; keep this tab open.`
-                    : `About ${estimatedMinutes} min for the remaining rows at 10 requests/minute. Refresh resumes this tab's run.`}</span>
+                    ? `${jobStatus?.completed_count ?? 0} of ${jobStatus?.total_count ?? 0} websites complete · safe to leave this page or turn off your computer.`
+                    : `About ${estimatedMinutes} min minimum for the remaining rows at the configured shared request rate.`}</span>
                 </div>
               </div>
               <button
                 className="button button-primary"
-                onClick={() => isEnriching ? pauseEnrichment() : void enrichRows()}
-                disabled={isEnriching ? pauseRequestedRef.current : !apiKey.trim() || counts.pending === 0}
+                onClick={() => void enrichRows()}
+                disabled={isEnriching || isSubmittingJob || remainingCount === 0}
               >
-                {isEnriching
-                  ? pauseRequestedRef.current ? "Pausing…" : <>Pause after this row <span aria-hidden="true">Ⅱ</span></>
-                  : <>Enrich {counts.pending > 0 ? `${counts.pending} rows` : "list"} <span aria-hidden="true">→</span></>}
+                {isSubmittingJob ? "Queueing…" : <>Enrich {remainingCount > 0 ? `${remainingCount} rows` : "list"} <span aria-hidden="true">→</span></>}
               </button>
             </div>
-            {!apiKey.trim() && <p className="key-reminder">Add your Firecrawl API key above to start enriching.</p>}
 
             <div className="table-toolbar">
-              <div className="table-title"><h3>All records</h3><span>{visibleRows.length.toLocaleString()} shown</span></div>
+              <div className="table-title"><h3>All records</h3><span>{visibleRows.length.toLocaleString()} matching</span></div>
               <div className="table-controls">
                 <label className="search-field"><span aria-hidden="true">⌕</span><input aria-label="Search rows" placeholder="Search rows..." value={search} onChange={(event) => setSearch(event.target.value)} /><kbd>⌘ K</kbd></label>
                 <label className="filter-field"><span className="filter-icon" aria-hidden="true">☷</span><select aria-label="Filter by status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}>
@@ -472,6 +646,9 @@ export default function Home() {
                   <option value="not_found">No email found</option>
                   <option value="failed">Failed</option>
                   <option value="missing_website">Missing website</option>
+                </select></label>
+                <label className="page-size-field"><span>ROWS</span><select aria-label="Rows per page" value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
+                  {PAGE_SIZE_OPTIONS.map((size) => <option value={size} key={size}>{size}</option>)}
                 </select></label>
               </div>
             </div>
@@ -485,19 +662,30 @@ export default function Home() {
                   <th>STATUS</th>
                 </tr></thead>
                 <tbody>
-                  {visibleRows.slice(0, 100).map((row) => {
+                  {pageRows.map((row) => {
                     const rowIndex = project.rows.findIndex((candidate) => candidate.id === row.id);
                     return <tr key={row.id}>
                       <td className="row-number">{String(rowIndex + 1).padStart(2, "0")}</td>
                       {project.headers.slice(0, 5).map((_, index) => <td key={index} className={index === project.emailColumnIndex ? "email-cell" : ""}>{index === project.emailColumnIndex && !row.cells[index] ? <span className="placeholder-value">—</span> : row.cells[index] || <span className="placeholder-value">—</span>}</td>)}
                       {project.headers.length > 5 && <td className="more-columns"><span>+{project.headers.length - 5} columns</span></td>}
-                      <td><StatusBadge status={row.status} current={row.id === currentRowId} error={row.error} /></td>
+                      <td><StatusBadge status={row.status} current={false} error={row.error} /></td>
                     </tr>;
                   })}
                   {visibleRows.length === 0 && <tr><td className="empty-row" colSpan={Math.min(project.headers.length, 5) + 2}>No records match these filters.</td></tr>}
                 </tbody>
               </table>
-              {visibleRows.length > 100 && <div className="table-footer">Showing first 100 of {visibleRows.length.toLocaleString()} matching rows. Export includes all records.</div>}
+            </div>
+            <div className="pagination" aria-label="Table pagination">
+              <span className="pagination-summary">
+                Showing {visibleRows.length === 0 ? 0 : (safePage - 1) * pageSize + 1}–{Math.min(safePage * pageSize, visibleRows.length)} of {visibleRows.length.toLocaleString()}
+              </span>
+              <div className="pagination-buttons">
+                <button className="page-button" onClick={() => setCurrentPage(1)} disabled={safePage <= 1} aria-label="First page">«</button>
+                <button className="page-button" onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} disabled={safePage <= 1} aria-label="Previous page">‹</button>
+                <span>Page {safePage} of {pageCount}</span>
+                <button className="page-button" onClick={() => setCurrentPage((page) => Math.min(pageCount, page + 1))} disabled={safePage >= pageCount} aria-label="Next page">›</button>
+                <button className="page-button" onClick={() => setCurrentPage(pageCount)} disabled={safePage >= pageCount} aria-label="Last page">»</button>
+              </div>
             </div>
             {counts.notFound > 0 && <p className="table-footnote">{counts.notFound} row{counts.notFound === 1 ? "" : "s"} had no public email detected.</p>}
           </section>
@@ -508,7 +696,7 @@ export default function Home() {
         {!isHydrated && <div className="restore-note">Restoring local workspace…</div>}
         <footer className="footer">
           <span>Made for thoughtful outreach <span className="footer-heart">♥</span></span>
-          <span><span className="footer-lock">⌑</span> Saved privately in this browser <span className="muted-separator">·</span> No account needed</span>
+          <span><span className="footer-lock">⌑</span> CSV kept in this browser <span className="muted-separator">·</span> Private server-side worker queue</span>
         </footer>
       </div>
     </main>

@@ -3,12 +3,15 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "NEXT_DIST_DIR=.next-3000 next dev --hostname 0.0.0.0",
+    "dev:3118": "NEXT_DIST_DIR=.next-3118 next dev -p 3118",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.6.1",
+    "@supabase/supabase-js": "^2.57.4",
     "next": "^15.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
