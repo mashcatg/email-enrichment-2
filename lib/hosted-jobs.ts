@@ -39,10 +39,14 @@ export async function downloadPrivateJson<T>(pathname: string): Promise<T> {
   }
 }
 
-export async function deletePrivateJson(pathname: string): Promise<void> {
-  const { error } = await createSupabaseAdminClient().storage.from(PRIVATE_BUCKET).remove([pathname]);
-  if (error) {
-    throw new Error(`Could not clean up private job data in Supabase Storage: ${error.message}`);
+export async function deletePrivateJson(pathnames: string | string[]): Promise<void> {
+  const paths = typeof pathnames === "string" ? [pathnames] : pathnames;
+  const storage = createSupabaseAdminClient().storage.from(PRIVATE_BUCKET);
+  for (let offset = 0; offset < paths.length; offset += 500) {
+    const { error } = await storage.remove(paths.slice(offset, offset + 500));
+    if (error) {
+      throw new Error(`Could not clean up private job data in Supabase Storage: ${error.message}`);
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
-import { deletePrivateJson, uploadPrivateJson } from "@/lib/hosted-jobs";
+import { deletePrivateJson, listPrivateJson, uploadPrivateJson } from "@/lib/hosted-jobs";
 import { createSupabaseAdminClient, getAuthorizedUser } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -8,6 +8,65 @@ export const runtime = "nodejs";
 interface CreateJobBody {
   fileName: string;
   entries: Array<{ rowIndex: number; website: string }>;
+}
+
+export async function DELETE(request: Request) {
+  const user = await getAuthorizedUser();
+  if (!user) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+
+  let body: { fileName?: unknown };
+  try {
+    body = await request.json() as { fileName?: unknown };
+  } catch {
+    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
+  }
+  if (!body || typeof body.fileName !== "string" || !body.fileName.trim() || body.fileName.length > 255) {
+    return NextResponse.json({ error: "A valid CSV file name is required." }, { status: 400 });
+  }
+
+  const supabase = createSupabaseAdminClient();
+  const { data: jobs, error: loadError } = await supabase.from("enrichment_jobs")
+    .select("id,input_blob").eq("owner_id", user.id).eq("file_name", body.fileName);
+  if (loadError) {
+    console.error("Could not load jobs for cleanup:", loadError);
+    return NextResponse.json({ error: "Could not load this CSV's server jobs." }, { status: 500 });
+  }
+
+  const storagePaths: string[] = [];
+  try {
+    for (const job of jobs ?? []) {
+      const expectedPrefix = `jobs/${user.id}/${job.id}/`;
+      if (!job.input_blob.startsWith(expectedPrefix) || !job.input_blob.endsWith("/input.json")) {
+        throw new Error(`Job ${job.id} has an unexpected private storage path.`);
+      }
+      storagePaths.push(job.input_blob);
+      storagePaths.push(...await listPrivateJson(`${expectedPrefix}results`));
+    }
+  } catch (error) {
+    console.error("Could not enumerate private job files for cleanup:", error);
+    return NextResponse.json({ error: "Could not safely enumerate this CSV's private job files." }, { status: 500 });
+  }
+
+  const jobIds = (jobs ?? []).map((job) => job.id);
+  if (jobIds.length > 0) {
+    const { data: deletedJobs, error: deleteError } = await supabase.from("enrichment_jobs")
+      .delete().eq("owner_id", user.id).in("id", jobIds).select("id");
+    if (deleteError || deletedJobs?.length !== jobIds.length) {
+      console.error("Could not delete all matching enrichment jobs:", deleteError);
+      return NextResponse.json({ error: "Could not delete all server jobs for this CSV." }, { status: 500 });
+    }
+  }
+
+  try {
+    await deletePrivateJson(storagePaths);
+  } catch (error) {
+    console.error("Jobs were deleted, but private files could not all be removed:", error);
+    return NextResponse.json({
+      error: "Server jobs were deleted, but some private storage files could not be removed.",
+    }, { status: 500 });
+  }
+
+  return NextResponse.json({ deletedJobs: jobIds.length, deletedFiles: storagePaths.length });
 }
 
 export async function POST(request: Request) {

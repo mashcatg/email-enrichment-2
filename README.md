@@ -26,6 +26,7 @@ Set up a retention/cleanup policy if you do not want them retained.
    [`supabase/migrations/20250201000000_hosted_enrichment.sql`](./supabase/migrations/20250201000000_hosted_enrichment.sql),
    [`supabase/migrations/20261109180000_worker_cron_extensions.sql`](./supabase/migrations/20261109180000_worker_cron_extensions.sql),
    [`supabase/migrations/20261110160000_firecrawl_rate_limit_backoff.sql`](./supabase/migrations/20261110160000_firecrawl_rate_limit_backoff.sql),
+   [`supabase/migrations/20261110170000_recover_paused_firecrawl_keys.sql`](./supabase/migrations/20261110170000_recover_paused_firecrawl_keys.sql),
    and create the `mashcatg@gmail.com` user in Supabase Auth with a password.
    Disable public sign-ups; the application only authorizes this account.
 2. **Supabase Storage:** apply
@@ -120,6 +121,10 @@ The worker coordinates all configured keys with one shared rate limiter.
 `FIRECRAWL_MAX_RPM` defaults to 8 and `FIRECRAWL_CONCURRENCY` defaults to 1.
 When Firecrawl returns HTTP 429, the worker honors its retry/reset guidance,
 defers the shared request queue, and retries the row without pausing the key.
+Website-specific DNS and unsupported-site errors are recorded as website
+failures, not key failures. The recovery migration re-enables keys paused by
+these errors and queues jobs waiting for a key; authentication and billing
+alerts remain unresolved for manual review.
 Ten keys for the same Firecrawl team do **not** necessarily provide ten times
 the request or concurrency limit; configure these values within the limits of
 the actual Firecrawl plan. On an API error the affected key is paused, an

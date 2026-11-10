@@ -455,15 +455,32 @@ export default function Home() {
   };
 
   const clearProject = async () => {
-    if (!window.confirm("Remove this CSV and its saved results from this browser? This cannot be undone.")) return;
+    const current = projectRef.current;
+    if (!current || isSubmittingJob) return;
+    if (!window.confirm(
+      `Remove ${current.fileName} and all its server jobs and saved results? This also removes the local CSV copy and cannot be undone.`,
+    )) return;
+    setIsSubmittingJob(true);
+    setErrorMessage("");
     try {
+      if (isAuthenticated) {
+        const response = await fetch("/api/jobs", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileName: current.fileName }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "Could not delete server jobs.");
+      }
       await deleteProject();
       projectRef.current = null;
       setProject(null);
-      setNotice("The saved project was removed from this browser.");
-      setErrorMessage("");
+      setJobStatus(null);
+      setNotice("The saved CSV, its server jobs, and their results were removed.");
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Could not clear the saved project.");
+      setErrorMessage(error instanceof Error ? error.message : "Could not remove the saved CSV and its server jobs.");
+    } finally {
+      setIsSubmittingJob(false);
     }
   };
 
@@ -599,7 +616,7 @@ export default function Home() {
                 <p><span className="file-icon">▤</span> {project.fileName} <span className="muted-separator">·</span> {counts.total.toLocaleString()} rows</p>
               </div>
               <div className="results-actions">
-                <button className="button button-quiet" onClick={clearProject} disabled={isEnriching}>Start over</button>
+                <button className="button button-quiet" onClick={() => void clearProject()} disabled={isSubmittingJob}>Start over</button>
                 <button className="button button-export" onClick={exportCsv}><span aria-hidden="true">↓</span> Export CSV</button>
               </div>
             </div>
