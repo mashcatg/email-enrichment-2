@@ -25,6 +25,7 @@ Set up a retention/cleanup policy if you do not want them retained.
 1. **Supabase:** create a project, apply
    [`supabase/migrations/20250201000000_hosted_enrichment.sql`](./supabase/migrations/20250201000000_hosted_enrichment.sql),
    [`supabase/migrations/20261109180000_worker_cron_extensions.sql`](./supabase/migrations/20261109180000_worker_cron_extensions.sql),
+   [`supabase/migrations/20261110160000_firecrawl_rate_limit_backoff.sql`](./supabase/migrations/20261110160000_firecrawl_rate_limit_backoff.sql),
    and create the `mashcatg@gmail.com` user in Supabase Auth with a password.
    Disable public sign-ups; the application only authorizes this account.
 2. **Supabase Storage:** apply
@@ -116,7 +117,9 @@ in a private Supabase Storage bucket and merged back into IndexedDB when the job
 The CSV can then be filtered, paginated, and exported.
 
 The worker coordinates all configured keys with one shared rate limiter.
-`FIRECRAWL_MAX_RPM` defaults to 10 and `FIRECRAWL_CONCURRENCY` defaults to 2.
+`FIRECRAWL_MAX_RPM` defaults to 8 and `FIRECRAWL_CONCURRENCY` defaults to 1.
+When Firecrawl returns HTTP 429, the worker honors its retry/reset guidance,
+defers the shared request queue, and retries the row without pausing the key.
 Ten keys for the same Firecrawl team do **not** necessarily provide ten times
 the request or concurrency limit; configure these values within the limits of
 the actual Firecrawl plan. On an API error the affected key is paused, an
