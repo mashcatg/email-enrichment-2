@@ -27,6 +27,7 @@ Set up a retention/cleanup policy if you do not want them retained.
    [`supabase/migrations/20261109180000_worker_cron_extensions.sql`](./supabase/migrations/20261109180000_worker_cron_extensions.sql),
    [`supabase/migrations/20261110160000_firecrawl_rate_limit_backoff.sql`](./supabase/migrations/20261110160000_firecrawl_rate_limit_backoff.sql),
    [`supabase/migrations/20261110170000_recover_paused_firecrawl_keys.sql`](./supabase/migrations/20261110170000_recover_paused_firecrawl_keys.sql),
+   [`supabase/migrations/20261112140000_pause_enrichment_jobs.sql`](./supabase/migrations/20261112140000_pause_enrichment_jobs.sql),
    and create the `mashcatg@gmail.com` user in Supabase Auth with a password.
    Disable public sign-ups; the application only authorizes this account.
 2. **Supabase Storage:** apply
@@ -141,3 +142,7 @@ The analytics page reports job totals, chunk progress, key health, and alerts.
 It refreshes automatically; the enrichment worker does not depend on the page
 remaining open. Hosted scheduling depends on the Supabase Cron job and the
 deployed Vercel function being healthy.
+
+The CSV export includes all rows matching the current status filter and search,
+not just the current page. With no active filter or search, it exports the full
+CSV.

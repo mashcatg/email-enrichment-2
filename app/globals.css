@@ -105,6 +105,7 @@ h1 span { color: var(--green); }
 .progress-track span { display: block; height: 100%; background: #59a477; border-radius: inherit; transition: width .3s ease; }
 
 .enrich-bar { margin: 0 20px 15px; border: 1px solid #e6eee7; background: #f7fbf7; border-radius: 8px; padding: 11px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.enrich-actions { display: flex; align-items: center; gap: 8px; }
 .enrich-copy { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .pulse-dot { flex-shrink: 0; box-shadow: 0 0 0 4px #e6f3e9; }
 .pulse-dot.is-running { animation: pulse 1.3s infinite; }
@@ -246,6 +247,8 @@ tr:last-child td { border-bottom: 0; }
   .results-actions { width: 100%; margin: 5px 0 0 39px; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); padding: 0 14px 14px; gap: 7px; }
   .enrich-bar { margin: 0 14px 14px; align-items: stretch; flex-direction: column; }
+  .enrich-actions { flex-direction: column; }
+  .enrich-actions .button { width: 100%; }
   .button-primary { width: 100%; }
   .table-toolbar { align-items: flex-start; flex-direction: column; gap: 10px; padding: 12px 14px; }
   .table-controls { width: 100%; }

@@ -22,7 +22,7 @@ export default function Home() {
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [jobStatus, setJobStatus] = useState<{
     id: string;
-    status: string;
+    status: "queued" | "running" | "waiting_for_keys" | "paused" | "completed";
     total_count: number;
     completed_count: number;
     found_count: number;
@@ -308,6 +308,29 @@ export default function Home() {
     }
   };
 
+  const setCampaignPaused = async (action: "pause" | "resume") => {
+    if (!jobStatus || isSubmittingJob) return;
+    setIsSubmittingJob(true);
+    setErrorMessage("");
+    try {
+      const response = await fetch(`/api/jobs/${jobStatus.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? `Could not ${action} this campaign.`);
+      setJobStatus((current) => current ? { ...current, ...result } : current);
+      setNotice(action === "pause"
+        ? "Campaign paused. Any request already in progress may finish."
+        : "Campaign resumed.");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : `Could not ${action} this campaign.`);
+    } finally {
+      setIsSubmittingJob(false);
+    }
+  };
+
   const counts = useMemo(() => {
     const rows = project?.rows ?? [];
     return {
@@ -409,6 +432,7 @@ export default function Home() {
 
   const isEnriching = isSubmittingJob || jobStatus?.status === "queued" ||
     jobStatus?.status === "running" || jobStatus?.status === "waiting_for_keys";
+  const hasIncompleteJob = Boolean(jobStatus && jobStatus.status !== "completed");
   const enrichRows = async () => {
     const current = projectRef.current;
     if (!current || isEnriching) return;
@@ -444,14 +468,19 @@ export default function Home() {
 
   const exportCsv = () => {
     if (!project) return;
-    const content = stringifyCsv([project.headers, ...project.rows.map((row) => row.cells)]);
+    const content = stringifyCsv([project.headers, ...visibleRows.map((row) => row.cells)]);
     const url = URL.createObjectURL(new Blob([`\uFEFF${content}`], { type: "text/csv;charset=utf-8" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = project.fileName.replace(/\.csv$/i, "") + "-enriched.csv";
+    const filterSuffix = statusFilter !== "all" || search.trim() ? "-filtered" : "";
+    link.download = project.fileName.replace(/\.csv$/i, "") + `${filterSuffix}-enriched.csv`;
     link.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setNotice("Your enriched CSV has been exported. Your local project is still saved.");
+    setNotice(
+      filterSuffix
+        ? `Exported ${visibleRows.length.toLocaleString()} rows matching the current search and filter.`
+        : `Exported all ${visibleRows.length.toLocaleString()} rows. Your local project is still saved.`,
+    );
   };
 
   const clearProject = async () => {
@@ -495,7 +524,7 @@ export default function Home() {
   };
 
   const successPercent = counts.total ? Math.round((counts.complete / counts.total) * 100) : 0;
-  const remainingCount = isEnriching && jobStatus
+  const remainingCount = hasIncompleteJob && jobStatus
     ? Math.max(0, jobStatus.total_count - jobStatus.completed_count)
     : counts.pending;
   const estimatedMinutes = Math.ceil((remainingCount * 6) / 60);
@@ -617,13 +646,15 @@ export default function Home() {
               </div>
               <div className="results-actions">
                 <button className="button button-quiet" onClick={() => void clearProject()} disabled={isSubmittingJob}>Start over</button>
-                <button className="button button-export" onClick={exportCsv}><span aria-hidden="true">↓</span> Export CSV</button>
+                <button className="button button-export" onClick={exportCsv} disabled={visibleRows.length === 0}>
+                  <span aria-hidden="true">↓</span> Export {statusFilter !== "all" || search.trim() ? `${visibleRows.length.toLocaleString()} filtered` : "CSV"}
+                </button>
               </div>
             </div>
 
             <div className="stats-grid">
               <div className="stat-card"><span className="stat-label">TOTAL ROWS</span><strong>{counts.total.toLocaleString()}</strong><span className="stat-caption">in your list</span></div>
-              <div className="stat-card"><span className="stat-label">EMAILS FOUND</span>              <strong>{(jobStatus?.found_count ?? counts.complete).toLocaleString()}</strong><span className="stat-caption">ready to export after sync</span></div>
+              <div className="stat-card"><span className="stat-label">EMAILS FOUND</span><strong>{counts.complete.toLocaleString()}</strong><span className="stat-caption">saved in this CSV, ready to export</span></div>
               <div className="stat-card"><span className="stat-label">{isEnriching ? "REMAINING" : "TO ENRICH"}</span><strong>{remainingCount.toLocaleString()}</strong><span className="stat-caption">{isEnriching ? "in the active job" : "pending or retryable"}</span></div>
               <div className="stat-card progress-stat">
                 <span className="stat-label">COMPLETION</span>
@@ -636,19 +667,34 @@ export default function Home() {
               <div className="enrich-copy">
                 <span className={`pulse-dot${isEnriching ? " is-running" : ""}`} />
                 <div>
-                  <strong>{isEnriching ? (jobStatus?.status === "waiting_for_keys" ? "Waiting for an active key" : "Enrichment running on server") : "Ready to find emails?"}</strong>
-                  <span>{isEnriching
+                  <strong>{jobStatus?.status === "paused"
+                    ? "Campaign paused"
+                    : isEnriching
+                      ? (jobStatus?.status === "waiting_for_keys" ? "Waiting for an active key" : "Enrichment running on server")
+                      : "Ready to find emails?"}</strong>
+                  <span>{hasIncompleteJob && jobStatus
                     ? `${jobStatus?.completed_count ?? 0} of ${jobStatus?.total_count ?? 0} websites complete · safe to leave this page or turn off your computer.`
                     : `About ${estimatedMinutes} min minimum for the remaining rows at the configured shared request rate.`}</span>
                 </div>
               </div>
-              <button
-                className="button button-primary"
-                onClick={() => void enrichRows()}
-                disabled={isEnriching || isSubmittingJob || remainingCount === 0}
-              >
-                {isSubmittingJob ? "Queueing…" : <>Enrich {remainingCount > 0 ? `${remainingCount} rows` : "list"} <span aria-hidden="true">→</span></>}
-              </button>
+              <div className="enrich-actions">
+                {jobStatus?.status === "paused" ? (
+                  <button className="button button-primary" onClick={() => void setCampaignPaused("resume")} disabled={isSubmittingJob}>
+                    {isSubmittingJob ? "Resuming…" : "Resume campaign"}
+                  </button>
+                ) : jobStatus && ["queued", "running"].includes(jobStatus.status) ? (
+                  <button className="button button-quiet" onClick={() => void setCampaignPaused("pause")} disabled={isSubmittingJob}>
+                    {isSubmittingJob ? "Pausing…" : "Pause campaign"}
+                  </button>
+                ) : null}
+                <button
+                  className="button button-primary"
+                  onClick={() => void enrichRows()}
+                  disabled={isEnriching || hasIncompleteJob || isSubmittingJob || remainingCount === 0}
+                >
+                  {isSubmittingJob ? "Queueing…" : <>Enrich {remainingCount > 0 ? `${remainingCount} rows` : "list"} <span aria-hidden="true">→</span></>}
+                </button>
+              </div>
             </div>
 
             <div className="table-toolbar">
