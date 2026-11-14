@@ -78,6 +78,31 @@ h1 span { color: var(--green); }
 .dropzone strong { font-size: 12px; font-weight: 600; }
 .dropzone strong span { color: var(--green); }
 .dropzone small { margin-top: 7px; font-size: 9px; color: #969f99; }
+.prospect-divider { display: flex; align-items: center; gap: 12px; margin: 24px 0 21px; color: #9aa39d; font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+.prospect-divider::before, .prospect-divider::after { content: ""; height: 1px; flex: 1; background: #edf0ed; }
+.prospect-form { border: 1px solid #e8eee8; border-radius: 9px; background: #fcfdfc; padding: 18px; }
+.prospect-heading { margin-bottom: 17px; }
+.prospect-field { min-width: 0; }
+.prospect-field .field-label { margin-top: 15px; }
+.field-label span { font-weight: 500; letter-spacing: 0; text-transform: none; }
+.search-term-list { display: grid; gap: 8px; }
+.search-term-row { display: flex; align-items: center; gap: 8px; }
+.search-term-number { width: 24px; flex: 0 0 24px; color: #89948d; text-align: center; font-size: 10px; }
+.auth-input, .prospect-textarea { width: 100%; min-width: 0; height: 39px; padding: 0 11px; border: 1px solid #e4e9e4; border-radius: 7px; outline: 0; color: #303b35; background: #fff; font-size: 12px; }
+.auth-input:focus, .prospect-textarea:focus { border-color: #82b298; box-shadow: 0 0 0 3px rgba(62, 135, 94, .08); }
+.auth-input::placeholder, .prospect-textarea::placeholder { color: #adb6b0; }
+.prospect-textarea { height: auto; min-height: 74px; padding: 10px 11px; resize: vertical; font: 12px/1.5 "DM Sans", sans-serif; }
+.search-term-remove { width: 34px; min-width: 34px; padding: 0; font-size: 16px; }
+.search-term-actions { display: flex; align-items: center; gap: 7px; margin-top: 9px; }
+.search-term-actions .button { min-width: 0; height: 29px; }
+.search-term-actions > span { margin-left: auto; color: #929b95; font-size: 9px; }
+.prospect-limit-row { display: grid; grid-template-columns: minmax(140px, 220px) 1fr; align-items: end; gap: 16px; }
+.prospect-limit-row > p { margin: 0 0 5px; color: #818c85; font-size: 10px; line-height: 1.5; }
+.prospect-limit-row a { color: var(--green-dark); }
+.apify-run-status { margin: 13px 0 0; color: var(--green-dark); font-size: 11px; }
+.prospect-replace-warning { margin: 0 0 12px; padding: 9px 11px; border: 1px solid #f0dfbd; border-radius: 6px; background: #fffaf0; color: #80652f; font-size: 10px; line-height: 1.5; }
+.prospect-submit { margin-top: 15px; }
+.prospect-submit:disabled { cursor: not-allowed; }
 
 .results-section { margin-top: 15px; overflow: hidden; }
 .results-heading { padding: 18px 20px; }
@@ -236,6 +261,7 @@ tr:last-child td { border-bottom: 0; }
 @media (max-width: 700px) {
   .topbar { height: 58px; padding: 0 20px; }
   .topbar-right { gap: 11px; }
+  .topbar-right .local-pill, .topbar-right a[href^="https://docs.firecrawl.dev"] { display: none; }
   .help-link { font-size: 10px; }
   .local-pill { font-size: 9px; padding: 6px 8px; }
   .workspace { width: calc(100% - 28px); padding-top: 36px; }
@@ -243,6 +269,10 @@ tr:last-child td { border-bottom: 0; }
   .setup-card, .upload-section { padding-left: 16px; padding-right: 16px; }
   .dropzone { padding: 15px; text-align: center; }
   .dropzone small { line-height: 1.5; max-width: 270px; }
+  .prospect-form { padding: 14px; }
+  .prospect-limit-row { grid-template-columns: 1fr; gap: 9px; }
+  .prospect-limit-row > p { margin-top: 0; }
+  .search-term-actions { flex-wrap: wrap; }
   .results-heading { flex-wrap: wrap; padding: 16px; }
   .results-actions { width: 100%; margin: 5px 0 0 39px; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); padding: 0 14px 14px; gap: 7px; }

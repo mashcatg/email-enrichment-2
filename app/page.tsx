@@ -11,6 +11,25 @@ type StatusFilter = "all" | RowStatus;
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250];
 const ACCOUNT_EMAIL = "mashcatg@gmail.com";
+const APIFY_RUN_STORAGE_KEY = "email-enrichment-apify-run-id";
+const PROSPECT_HEADERS = [
+  "title", "category", "website", "phone", "street", "city", "state",
+  "postalCode", "address", "rating", "reviewsCount", "googleMapsUrl", "placeId", "email",
+];
+
+function prospectValue(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.map(prospectValue).filter(Boolean).join(", ");
+  return "";
+}
+
+function prospectCell(item: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = prospectValue(item[key]);
+    if (value) return value;
+  }
+  return "";
+}
 
 export default function Home() {
   const [project, setProject] = useState<EnrichmentProject | null>(null);
@@ -39,6 +58,12 @@ export default function Home() {
   const [isSubmittingJob, setIsSubmittingJob] = useState(false);
   const [notice, setNotice] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [apifySearchTerms, setApifySearchTerms] = useState([""]);
+  const [apifyBulkEdit, setApifyBulkEdit] = useState(false);
+  const [apifyLocation, setApifyLocation] = useState("");
+  const [apifyPlaceLimit, setApifyPlaceLimit] = useState("100");
+  const [apifyRunId, setApifyRunId] = useState<string | null>(null);
+  const [apifyRunStatus, setApifyRunStatus] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const appliedResultsForJobRef = useRef<string | null>(null);
 
@@ -187,6 +212,19 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (!isHydrated || !isAuthenticated) return;
+    if (apifyRunId) {
+      window.localStorage.setItem(APIFY_RUN_STORAGE_KEY, apifyRunId);
+      return;
+    }
+    const savedRunId = window.localStorage.getItem(APIFY_RUN_STORAGE_KEY);
+    if (savedRunId) {
+      setApifyRunId(savedRunId);
+      setApifyRunStatus("Resuming the Apify prospect search…");
+    }
+  }, [apifyRunId, isAuthenticated, isHydrated]);
+
+  useEffect(() => {
     const jobId = project?.jobId;
     if (!isAuthenticated || !jobId) {
       setJobStatus(null);
@@ -236,6 +274,121 @@ export default function Home() {
       window.clearInterval(timer);
     };
   }, [isAuthenticated, project?.jobId, save]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !apifyRunId) return;
+    let active = true;
+    let timer: number | undefined;
+
+    const checkRun = async () => {
+      try {
+        let response: Response;
+        try {
+          response = await fetch(`/api/prospects/${encodeURIComponent(apifyRunId)}`, { cache: "no-store" });
+        } catch {
+          if (active) {
+            setApifyRunStatus("Connection to Apify was interrupted; retrying…");
+            timer = window.setTimeout(() => { void checkRun(); }, 5000);
+          }
+          return;
+        }
+        const result = await response.json();
+        if (!response.ok) {
+          if (response.status === 429 || response.status >= 500) {
+            setApifyRunStatus("Apify is temporarily unavailable; retrying…");
+            timer = window.setTimeout(() => { void checkRun(); }, 5000);
+            return;
+          }
+          throw new Error(result.error ?? "Could not check the Apify run.");
+        }
+        if (!active) return;
+
+        if (result.status === "SUCCEEDED") {
+          if (!Array.isArray(result.items)) throw new Error("Apify completed without a results list.");
+          const seenPlaces = new Set<string>();
+          const rows: EnrichmentRow[] = result.items.flatMap((raw: unknown, index: number) => {
+            const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+            const placeId = prospectCell(item, "placeId", "googlePlaceId");
+            const mapsUrl = prospectCell(item, "url", "placeUrl", "googleMapsUrl");
+            const dedupeKey = (placeId || mapsUrl).trim().toLowerCase();
+            if (dedupeKey && seenPlaces.has(dedupeKey)) return [];
+            if (dedupeKey) seenPlaces.add(dedupeKey);
+            const cells = [
+              prospectCell(item, "title", "name", "nameOnGoogle"),
+              prospectCell(item, "categoryName", "category", "categories"),
+              prospectCell(item, "website", "websiteUrl"),
+              prospectCell(item, "phone", "phoneUnformatted"),
+              prospectCell(item, "street", "streetAddress"),
+              prospectCell(item, "city", "cityName"),
+              prospectCell(item, "state", "stateName"),
+              prospectCell(item, "postalCode", "zipCode"),
+              prospectCell(item, "address", "formattedAddress"),
+              prospectCell(item, "totalScore", "rating"),
+              prospectCell(item, "reviewsCount", "reviewCount"),
+              mapsUrl,
+              placeId,
+              "",
+            ];
+            return [{
+              id: `apify-${Date.now()}-${index}`,
+              cells,
+              status: cells[2] ? "pending" : "missing_website",
+            }];
+          });
+          if (rows.length === 0) throw new Error("Apify completed successfully but found no places.");
+          const now = new Date();
+          const fileName = `apify-prospects-${now.toISOString().slice(0, 10)}.csv`;
+          const next: EnrichmentProject = {
+            headers: PROSPECT_HEADERS,
+            rows,
+            websiteColumnIndex: PROSPECT_HEADERS.indexOf("website"),
+            emailColumnIndex: PROSPECT_HEADERS.indexOf("email"),
+            fileName,
+            updatedAt: Date.now(),
+          };
+          try {
+            await save(next);
+          } catch {
+            if (active) {
+              setApifyRunStatus("Could not save the results in this browser; retrying…");
+              timer = window.setTimeout(() => { void checkRun(); }, 5000);
+            }
+            return;
+          }
+          window.localStorage.removeItem(APIFY_RUN_STORAGE_KEY);
+          setApifyRunId(null);
+          setApifyRunStatus("");
+          setSearch("");
+          setStatusFilter("all");
+          setCurrentPage(1);
+          setNotice(`Apify found ${rows.length.toLocaleString()} places. No emails were requested from Apify; review the list and start Firecrawl enrichment when ready.`);
+          return;
+        }
+
+        if (["FAILED", "ABORTED", "TIMED-OUT"].includes(result.status)) {
+          window.localStorage.removeItem(APIFY_RUN_STORAGE_KEY);
+          setApifyRunId(null);
+          throw new Error(result.statusMessage ?? `Apify run ${String(result.status).toLowerCase()}.`);
+        }
+
+        setApifyRunStatus(result.statusMessage || `Apify status: ${result.status}`);
+        timer = window.setTimeout(() => { void checkRun(); }, 5000);
+      } catch (error) {
+        if (active) {
+          window.localStorage.removeItem(APIFY_RUN_STORAGE_KEY);
+          setApifyRunId(null);
+          setApifyRunStatus("");
+          setErrorMessage(error instanceof Error ? error.message : "Could not retrieve Apify prospects.");
+        }
+      }
+    };
+
+    void checkRun();
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [apifyRunId, isAuthenticated, save]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -430,6 +583,64 @@ export default function Home() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [isHydrated, save]);
 
+  const startApifySearch = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!isHydrated) {
+      setErrorMessage("Wait for the saved project to load before starting a new prospect search.");
+      return;
+    }
+    if (projectRef.current?.jobId && !jobStatus) {
+      setErrorMessage("Wait while the current campaign status is checked before starting a new prospect search.");
+      return;
+    }
+    if (jobStatus && jobStatus.status !== "completed") {
+      setErrorMessage("Wait for the current enrichment campaign to finish before starting a new prospect search.");
+      return;
+    }
+    const searchTerms = apifySearchTerms.map((term) => term.trim()).filter(Boolean);
+    const location = apifyLocation.trim();
+    const maxPlacesPerSearch = Number(apifyPlaceLimit);
+    if (!searchTerms.length || !location || !Number.isInteger(maxPlacesPerSearch)
+      || maxPlacesPerSearch < 1 || maxPlacesPerSearch > 2000) {
+      setErrorMessage("Enter at least one search term, a location, and a per-term limit between 1 and 2,000.");
+      return;
+    }
+
+    const maximumResults = searchTerms.length * maxPlacesPerSearch;
+    const estimatedMaximumCost = (0.007 + maximumResults * 0.004).toFixed(2);
+    const currentProject = projectRef.current;
+    const replacementWarning = currentProject
+      ? ` The current project “${currentProject.fileName}” and its local results will be replaced after the new search completes. Export any results you want to keep first.`
+      : "";
+    if (!window.confirm(
+      `Start an Apify Google Maps search for ${searchTerms.length} term(s) in ${location}, up to ${maximumResults.toLocaleString()} places? Current published base pricing estimates up to $${estimatedMaximumCost} USD (${maximumResults.toLocaleString()} places at $0.004 each, plus $0.007 per run), before taxes or any add-ons. This run requests place data only, not contact or email enrichment.${replacementWarning} Continue?`,
+    )) return;
+
+    setIsSubmittingJob(true);
+    setErrorMessage("");
+    setNotice("");
+    setApifyRunStatus("Starting Apify prospect search…");
+    try {
+      const response = await fetch("/api/prospects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ searchTerms, location, maxPlacesPerSearch }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not start the Apify prospect search.");
+      if (typeof result.id !== "string" || !result.id) throw new Error("Apify started without returning a run ID.");
+      window.localStorage.setItem(APIFY_RUN_STORAGE_KEY, result.id);
+      setApifyRunId(result.id);
+      setApifyRunStatus("Apify is collecting Google Maps prospects…");
+    } catch (error) {
+      window.localStorage.removeItem(APIFY_RUN_STORAGE_KEY);
+      setApifyRunStatus("");
+      setErrorMessage(error instanceof Error ? error.message : "Could not start the Apify prospect search.");
+    } finally {
+      setIsSubmittingJob(false);
+    }
+  };
+
   const isEnriching = isSubmittingJob || jobStatus?.status === "queued" ||
     jobStatus?.status === "running" || jobStatus?.status === "waiting_for_keys";
   const hasIncompleteJob = Boolean(jobStatus && jobStatus.status !== "completed");
@@ -576,6 +787,7 @@ export default function Home() {
         </a>
         <div className="topbar-right">
           <a className="help-link" href="/analytics">Analytics</a>
+          <a className="help-link" href="#prospect-search">Prospects</a>
           <span className="local-pill"><span className="local-dot" /> Background worker</span>
           <a className="help-link" href="https://docs.firecrawl.dev/" target="_blank" rel="noreferrer">Firecrawl docs <span aria-hidden="true">↗</span></a>
           <button className="text-button" onClick={() => void signOut()}>Sign out</button>
@@ -753,6 +965,128 @@ export default function Home() {
             {counts.notFound > 0 && <p className="table-footnote">{counts.notFound} row{counts.notFound === 1 ? "" : "s"} had no public email detected.</p>}
           </section>
         )}
+
+        <section className="upload-section" id="prospect-search" aria-label="Apify prospect search">
+          {!project && <div className="prospect-divider"><span>OR FIND PROSPECTS FIRST</span></div>}
+          <form className="prospect-form" onSubmit={(event) => void startApifySearch(event)}>
+            <div className="section-heading prospect-heading">
+              <div className="step-number">03</div>
+              <div>
+                <h2>Find prospects with Apify</h2>
+                <p>Collect Google Maps business details first, then choose when to find emails with Firecrawl.</p>
+              </div>
+            </div>
+
+            {project && <p className="prospect-replace-warning">Starting a new search will replace the current local project after the results are ready. Export anything you want to keep first.</p>}
+            {jobStatus && jobStatus.status !== "completed" && (
+              <p className="prospect-replace-warning">Finish or pause/cancel the current campaign before starting a new prospect search.</p>
+            )}
+
+            <div className="prospect-field">
+              <label className="field-label">SEARCH TERM(S)</label>
+              {apifyBulkEdit ? (
+                <textarea
+                  className="prospect-textarea"
+                  aria-label="Search terms, one per line"
+                  value={apifySearchTerms.join("\n")}
+                  onChange={(event) => setApifySearchTerms(event.target.value.split(/\r?\n/).slice(0, 10))}
+                  placeholder={"personal injury lawyer\ncriminal lawyer\nfamily lawyer"}
+                  disabled={Boolean(apifyRunId) || isSubmittingJob}
+                  rows={Math.min(6, Math.max(3, apifySearchTerms.length))}
+                />
+              ) : (
+                <div className="search-term-list">
+                  {apifySearchTerms.map((term, index) => (
+                    <div className="search-term-row" key={index}>
+                      <span className="search-term-number">{index + 1}</span>
+                      <input
+                        className="auth-input"
+                        aria-label={`Search term ${index + 1}`}
+                        value={term}
+                        onChange={(event) => setApifySearchTerms((terms) => terms.map((current, currentIndex) =>
+                          currentIndex === index ? event.target.value : current))}
+                        placeholder="e.g. personal injury lawyer"
+                        disabled={Boolean(apifyRunId) || isSubmittingJob}
+                      />
+                      <button
+                        className="button button-quiet search-term-remove"
+                        type="button"
+                        aria-label={`Remove search term ${index + 1}`}
+                        onClick={() => setApifySearchTerms((terms) => terms.length > 1
+                          ? terms.filter((_, currentIndex) => currentIndex !== index)
+                          : [""])}
+                        disabled={Boolean(apifyRunId) || isSubmittingJob}
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="search-term-actions">
+                <button
+                  className="button button-primary"
+                  type="button"
+                  onClick={() => setApifySearchTerms((terms) => terms.length < 10 ? [...terms, ""] : terms)}
+                  disabled={Boolean(apifyRunId) || isSubmittingJob || apifyBulkEdit || apifySearchTerms.length >= 10}
+                >+ Add</button>
+                <button
+                  className="button button-quiet"
+                  type="button"
+                  onClick={() => setApifyBulkEdit((enabled) => !enabled)}
+                  disabled={Boolean(apifyRunId) || isSubmittingJob}
+                >{apifyBulkEdit ? "Edit individually" : "Bulk edit"}</button>
+                <span>{apifySearchTerms.filter((term) => term.trim()).length}/10 terms</span>
+              </div>
+            </div>
+
+            <div className="prospect-field">
+              <label className="field-label" htmlFor="apify-location">LOCATION <span>(one location per run)</span></label>
+              <input
+                id="apify-location"
+                className="auth-input"
+                value={apifyLocation}
+                onChange={(event) => setApifyLocation(event.target.value)}
+                placeholder="e.g. Miami, Florida, USA"
+                maxLength={300}
+                required
+                disabled={Boolean(apifyRunId) || isSubmittingJob}
+              />
+            </div>
+
+            <div className="prospect-limit-row">
+              <div className="prospect-field">
+                <label className="field-label" htmlFor="apify-place-limit">PLACES PER SEARCH TERM</label>
+                <input
+                  id="apify-place-limit"
+                  className="auth-input"
+                  type="number"
+                  min={1}
+                  max={2000}
+                  step={1}
+                  value={apifyPlaceLimit}
+                  onChange={(event) => setApifyPlaceLimit(event.target.value)}
+                  required
+                  disabled={Boolean(apifyRunId) || isSubmittingJob}
+                />
+              </div>
+              <p>
+                Current base pricing: $0.004 per place scraped plus $0.007 per run. This app does not request
+                Apify email or contact enrichment.{" "}
+                <a href="https://apify.com/compass/crawler-google-places/pricing" target="_blank" rel="noreferrer">View actor pricing</a>
+              </p>
+            </div>
+
+            {apifyRunStatus && <p className="apify-run-status" role="status">{apifyRunStatus}</p>}
+            <button
+              className="button button-primary prospect-submit"
+              type="submit"
+              disabled={!isHydrated || Boolean(apifyRunId) || isSubmittingJob
+                || Boolean(project?.jobId && !jobStatus)
+                || Boolean(jobStatus && jobStatus.status !== "completed")}
+            >
+              {apifyRunId ? "Searching places…" : isSubmittingJob ? "Starting search…" : "Find prospects"}
+            </button>
+          </form>
+        </section>
 
         {notice && <div className="toast toast-success" role="status"><span>✓</span> {notice}<button onClick={() => setNotice("")} aria-label="Dismiss notification">×</button></div>}
         {errorMessage && <div className="toast toast-error" role="alert"><span>!</span> {errorMessage}<button onClick={() => setErrorMessage("")} aria-label="Dismiss error">×</button></div>}

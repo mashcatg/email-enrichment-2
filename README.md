@@ -98,6 +98,28 @@ npm install
 npm run dev
 ```
 
+## Find prospects with Apify
+
+Set `APIFY_API_TOKEN` in the server environment (for local work, `.env.local`;
+for deployment, the hosting provider's environment settings). Keep it
+server-only: do not prefix it with `NEXT_PUBLIC_`. Optionally set
+`APIFY_MAX_TOTAL_CHARGE_USD` to cap each actor run's spend.
+
+When no project is loaded, use **Find prospects with Apify** to enter up to ten
+search terms, one location, and a per-term place limit. The app starts the
+`compass/crawler-google-places` Actor and retrieves its results after it
+finishes. Runs are resumable after a page reload. Apify only collects place
+prospect data in this flow; email/contact enrichment is not requested. Results
+are deduplicated by place ID when available, saved to the browser's local
+project, and have a blank email column. Firecrawl enrichment remains a separate,
+explicit action.
+
+Apify charges for actor runs and scraped places. The app displays an estimate
+using the Actor's current published base event prices; actual charges can vary
+by account plan, successful places, and any enabled add-ons. Review the
+[Actor's pricing](https://apify.com/compass/crawler-google-places/pricing)
+before starting a run.
+
 If another copy of this project is already running on port `3000`, use
 `npm run dev:3118` instead. It uses a separate Next.js build directory so the
 two development servers do not corrupt each other's caches.
