@@ -120,6 +120,15 @@ by account plan, successful places, and any enabled add-ons. Review the
 [Actor's pricing](https://apify.com/compass/crawler-google-places/pricing)
 before starting a run.
 
+After enrichment has completed and at least one email was found, choose
+**Verify leads** to open the verification section. Upload the enriched leads CSV
+and a verified emails CSV, each with a header named `email` (case-insensitive),
+then choose **Generate final list**. The verified CSV must include a `Safe to
+send` column. The app keeps enriched rows whose email appears in a verified row
+marked `Yes`, adds or updates a `Safe to send` column to `Yes`, and provides a
+downloadable CSV. Rows marked `No` or left blank are excluded. CSV processing
+happens locally in the browser.
+
 If another copy of this project is already running on port `3000`, use
 `npm run dev:3118` instead. It uses a separate Next.js build directory so the
 two development servers do not corrupt each other's caches.
@@ -139,15 +148,20 @@ server, and divides each job into at most ten queue chunks. Each scrape requests
 the normalized domain root once; it does not crawl links. Results are written
 in a private Supabase Storage bucket and merged back into IndexedDB when the job finishes.
 The CSV can then be filtered, paginated, and exported.
+Extracted email values are URL-decoded and surrounding markup punctuation such
+as whitespace and Markdown `**` markers is removed before the email is saved.
 
 The worker coordinates all configured keys with one shared rate limiter.
 `FIRECRAWL_MAX_RPM` defaults to 8 and `FIRECRAWL_CONCURRENCY` defaults to 1.
 When Firecrawl returns HTTP 429, the worker honors its retry/reset guidance,
 defers the shared request queue, and retries the row without pausing the key.
-Website-specific DNS and unsupported-site errors are recorded as website
-failures, not key failures. The recovery migration re-enables keys paused by
-these errors and queues jobs waiting for a key; authentication and billing
-alerts remain unresolved for manual review.
+Website-specific DNS, timeouts, blocked sites, unsupported sites, and
+“all scraping engines failed” errors are recorded for that row and the worker
+continues to the next row without pausing a Firecrawl key. Network and
+Firecrawl service errors are recorded as row failures without pausing a key.
+Explicit authentication and billing responses can pause the affected key. From
+the analytics page, **Enable all configured keys** reactivates all keys and
+queues jobs waiting for an active key.
 Ten keys for the same Firecrawl team do **not** necessarily provide ten times
 the request or concurrency limit; configure these values within the limits of
 the actual Firecrawl plan. On an API error the affected key is paused, an

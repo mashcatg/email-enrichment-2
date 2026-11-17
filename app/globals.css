@@ -104,6 +104,22 @@ h1 span { color: var(--green); }
 .prospect-submit { margin-top: 15px; }
 .prospect-submit:disabled { cursor: not-allowed; }
 
+.verify-leads-section { margin-top: 15px; padding: 22px 24px 24px; background: var(--surface); border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 3px 12px rgba(29, 55, 39, .025); scroll-margin-top: 18px; }
+.verify-file-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.verify-file { min-width: 0; padding: 13px; border: 1px solid #e8eee8; border-radius: 8px; background: #fcfdfc; }
+.verify-file .field-label { margin: 0 0 9px; }
+.verify-file input { display: block; width: 100%; color: #647169; font-size: 10px; }
+.verify-file input::file-selector-button { margin-right: 8px; padding: 6px 8px; border: 1px solid #e5e9e5; border-radius: 5px; background: #fff; color: var(--green-dark); font: inherit; font-weight: 600; cursor: pointer; }
+.verify-file small { display: block; margin-top: 9px; color: #929b95; font-size: 9px; line-height: 1.5; }
+.verify-generate { margin-top: 13px; }
+.verify-results { margin-top: 18px; border: 1px solid #e8eee8; border-radius: 8px; overflow: hidden; }
+.verify-results-heading { padding: 13px 15px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.verify-results-heading > div { display: flex; flex-direction: column; gap: 4px; }
+.verify-results-heading strong { font: 700 11px Manrope, sans-serif; }
+.verify-results-heading span { color: #87918a; font-size: 9px; }
+.verify-preview-note, .verify-empty { margin: 0; padding: 11px 15px; border-top: 1px solid #edf0ed; color: #87918a; font-size: 9px; }
+.verify-empty { color: #9b7830; }
+
 .results-section { margin-top: 15px; overflow: hidden; }
 .results-heading { padding: 18px 20px; }
 .results-heading p { margin-top: 4px; }
@@ -270,6 +286,10 @@ tr:last-child td { border-bottom: 0; }
   .dropzone { padding: 15px; text-align: center; }
   .dropzone small { line-height: 1.5; max-width: 270px; }
   .prospect-form { padding: 14px; }
+  .verify-leads-section { padding: 16px; }
+  .verify-file-grid { grid-template-columns: 1fr; }
+  .verify-results-heading { align-items: flex-start; flex-direction: column; }
+  .verify-results-heading .button { width: 100%; }
   .prospect-limit-row { grid-template-columns: 1fr; gap: 9px; }
   .prospect-limit-row > p { margin-top: 0; }
   .search-term-actions { flex-wrap: wrap; }

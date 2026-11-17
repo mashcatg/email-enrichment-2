@@ -1,8 +1,8 @@
 "use client";
 
 import { ChangeEvent, DragEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { parseCsv, stringifyCsv } from "@/lib/csv";
-import { isValidEmailAddress } from "@/lib/email";
+import { generateVerifiedCsv, parseCsv, stringifyCsv } from "@/lib/csv";
+import { isValidEmailAddress, normalizeEmailAddress } from "@/lib/email";
 import { deleteProject, readProject, requestPersistentStorage, writeProject } from "@/lib/storage";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { EnrichmentProject, EnrichmentRow, RowStatus } from "@/lib/types";
@@ -16,6 +16,11 @@ const PROSPECT_HEADERS = [
   "title", "category", "website", "phone", "street", "city", "state",
   "postalCode", "address", "rating", "reviewsCount", "googleMapsUrl", "placeId", "email",
 ];
+
+type FinalLeadList = {
+  headers: string[];
+  rows: string[][];
+};
 
 function prospectValue(value: unknown): string {
   if (typeof value === "string" || typeof value === "number") return String(value);
@@ -64,7 +69,11 @@ export default function Home() {
   const [apifyPlaceLimit, setApifyPlaceLimit] = useState("100");
   const [apifyRunId, setApifyRunId] = useState<string | null>(null);
   const [apifyRunStatus, setApifyRunStatus] = useState("");
+  const [enrichedCsvFile, setEnrichedCsvFile] = useState<File | null>(null);
+  const [verifiedCsvFile, setVerifiedCsvFile] = useState<File | null>(null);
+  const [finalLeadList, setFinalLeadList] = useState<FinalLeadList | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const verifyLeadsSectionRef = useRef<HTMLElement>(null);
   const appliedResultsForJobRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -162,10 +171,11 @@ export default function Home() {
             ...saved,
             rows: saved.rows.map((row) => {
               const cells = [...row.cells];
-              const email = cells[saved.emailColumnIndex]?.trim() ?? "";
-              if (!isValidEmailAddress(email)) {
+              const originalEmail = cells[saved.emailColumnIndex]?.trim() ?? "";
+              const email = normalizeEmailAddress(originalEmail);
+              if (!email) {
                 let rowChanged = false;
-                if (email) {
+                if (originalEmail) {
                   cells[saved.emailColumnIndex] = "";
                   rowChanged = true;
                   removedInvalidEmails += 1;
@@ -179,6 +189,10 @@ export default function Home() {
                   hasChanges = true;
                   return { ...row, cells, status, error: undefined };
                 }
+              } else if (cells[saved.emailColumnIndex] !== email) {
+                hasChanges = true;
+                cells[saved.emailColumnIndex] = email;
+                return { ...row, cells, status: "complete" as const, error: undefined };
               } else if (row.status === "running") {
                 hasChanges = true;
                 return { ...row, status: "complete" as const, error: undefined };
@@ -542,10 +556,13 @@ export default function Home() {
         while (padded.length < parsed[0].length) padded.push("");
         while (padded.length < headers.length) padded.push("");
         const hasWebsite = Boolean(padded[websiteColumnIndex]?.trim());
-        const hasEmail = isValidEmailAddress(padded[emailColumnIndex]?.trim() ?? "");
+        const email = normalizeEmailAddress(padded[emailColumnIndex]?.trim() ?? "");
+        const hasEmail = Boolean(email && isValidEmailAddress(email));
         if (!hasEmail && padded[emailColumnIndex]?.trim()) {
           padded[emailColumnIndex] = "";
           removedInvalidEmails += 1;
+        } else if (email) {
+          padded[emailColumnIndex] = email;
         }
         return {
           id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
@@ -694,6 +711,39 @@ export default function Home() {
     );
   };
 
+  const generateFinalList = async () => {
+    if (!enrichedCsvFile || !verifiedCsvFile) {
+      setErrorMessage("Upload both the enriched emails CSV and the verified emails CSV.");
+      return;
+    }
+    setErrorMessage("");
+    setNotice("");
+    try {
+      const [enrichedContent, verifiedContent] = await Promise.all([
+        enrichedCsvFile.text(),
+        verifiedCsvFile.text(),
+      ]);
+      const result = generateVerifiedCsv(enrichedContent, verifiedContent);
+      setFinalLeadList(result);
+      setNotice(`Generated a final list with ${result.rows.length.toLocaleString()} matching leads.`);
+    } catch (error) {
+      setFinalLeadList(null);
+      setErrorMessage(error instanceof Error ? error.message : "Could not generate the final list.");
+    }
+  };
+
+  const downloadFinalList = () => {
+    if (!finalLeadList || !enrichedCsvFile) return;
+    const content = stringifyCsv([finalLeadList.headers, ...finalLeadList.rows]);
+    const url = URL.createObjectURL(new Blob([`\uFEFF${content}`], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${enrichedCsvFile.name.replace(/\.csv$/i, "")}-verified.csv`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setNotice(`Downloaded ${finalLeadList.rows.length.toLocaleString()} verified leads.`);
+  };
+
   const clearProject = async () => {
     const current = projectRef.current;
     if (!current || isSubmittingJob) return;
@@ -742,6 +792,12 @@ export default function Home() {
   const jobPercent = jobStatus?.total_count
     ? Math.round((jobStatus.completed_count / jobStatus.total_count) * 100)
     : 0;
+  const canVerifyLeads = Boolean(
+    project && counts.complete > 0 && !isEnriching && !hasIncompleteJob
+      && (project.jobId
+        ? jobStatus?.status === "completed"
+        : project.rows.every((row) => row.status !== "pending" && row.status !== "running")),
+  );
 
   if (!authReady) {
     return <main className="auth-shell"><p>Checking your secure sign-in…</p></main>;
@@ -906,6 +962,14 @@ export default function Home() {
                 >
                   {isSubmittingJob ? "Queueing…" : <>Enrich {remainingCount > 0 ? `${remainingCount} rows` : "list"} <span aria-hidden="true">→</span></>}
                 </button>
+                {canVerifyLeads && (
+                  <button
+                    className="button button-export"
+                    onClick={() => verifyLeadsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                  >
+                    Verify leads <span aria-hidden="true">→</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1086,6 +1150,93 @@ export default function Home() {
               {apifyRunId ? "Searching places…" : isSubmittingJob ? "Starting search…" : "Find prospects"}
             </button>
           </form>
+        </section>
+
+        <section
+          className="verify-leads-section"
+          id="verify-leads"
+          aria-label="Verify leads"
+          ref={verifyLeadsSectionRef}
+        >
+            <div className="section-heading upload-heading">
+              <div className="step-number">04</div>
+              <div>
+                <h2>Verify leads</h2>
+                <p>Keep enriched rows whose email matches a verified row marked “Safe to send: Yes.”</p>
+              </div>
+            </div>
+            <div className="verify-file-grid">
+              <label className="verify-file">
+                <span className="field-label">ENRICHED EMAILS CSV</span>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  aria-label="Upload enriched emails CSV"
+                  onChange={(event) => {
+                    setEnrichedCsvFile(event.target.files?.[0] ?? null);
+                    setFinalLeadList(null);
+                    setErrorMessage("");
+                  }}
+                />
+                <small>The file containing your enriched leads and email column.</small>
+              </label>
+              <label className="verify-file">
+                <span className="field-label">VERIFIED EMAILS CSV</span>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  aria-label="Upload verified emails CSV"
+                  onChange={(event) => {
+                    setVerifiedCsvFile(event.target.files?.[0] ?? null);
+                    setFinalLeadList(null);
+                    setErrorMessage("");
+                  }}
+                />
+                <small>Only addresses marked “Safe to send” as Yes will be included.</small>
+              </label>
+            </div>
+            <button
+              className="button button-primary verify-generate"
+              onClick={() => void generateFinalList()}
+              disabled={!enrichedCsvFile || !verifiedCsvFile}
+            >
+              Generate final list
+            </button>
+
+            {finalLeadList && (
+              <div className="verify-results">
+                <div className="verify-results-heading">
+                  <div>
+                    <strong>{finalLeadList.rows.length.toLocaleString()} matching leads</strong>
+                    <span>Only verified rows marked Yes are included. “Safe to send” is set to Yes.</span>
+                  </div>
+                  <button className="button button-export" onClick={downloadFinalList} disabled={!finalLeadList.rows.length}>
+                    <span aria-hidden="true">↓</span> Download final CSV
+                  </button>
+                </div>
+                {finalLeadList.rows.length > 0 ? (
+                  <>
+                    <div className="table-scroll">
+                      <table>
+                        <thead><tr>{finalLeadList.headers.map((header, index) => <th key={`${header}-${index}`}>{header}</th>)}</tr></thead>
+                        <tbody>
+                          {finalLeadList.rows.slice(0, 10).map((row, rowIndex) => (
+                            <tr key={rowIndex}>
+                              {finalLeadList.headers.map((_, columnIndex) => <td key={columnIndex}>{row[columnIndex] || <span className="placeholder-value">—</span>}</td>)}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {finalLeadList.rows.length > 10 && (
+                      <p className="verify-preview-note">Showing the first 10 rows. Download the CSV to view the complete final list.</p>
+                    )}
+                  </>
+                ) : (
+                  <p className="verify-empty">No emails in the enriched CSV matched the verified CSV.</p>
+                )}
+              </div>
+            )}
         </section>
 
         {notice && <div className="toast toast-success" role="status"><span>✓</span> {notice}<button onClick={() => setNotice("")} aria-label="Dismiss notification">×</button></div>}

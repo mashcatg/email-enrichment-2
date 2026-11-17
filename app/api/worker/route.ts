@@ -131,9 +131,12 @@ async function scrape(website: string, apiKey: string): Promise<string | null> {
         signal: controller.signal,
       });
     } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new WebsiteUnavailableError();
+      }
       throw new FirecrawlRequestError(
         error instanceof Error ? `Could not connect to Firecrawl: ${error.message}` : "Could not connect to Firecrawl.",
-        true,
+        false,
       );
     }
 
@@ -158,8 +161,7 @@ async function scrape(website: string, apiKey: string): Promise<string | null> {
           getRetryAfterMs(response, errorMessage),
         );
       }
-      const keyWideStatus = [401, 402, 403].includes(response.status)
-        || [500, 502, 503, 504].includes(response.status);
+      const keyWideStatus = [401, 402, 403].includes(response.status);
       throw new FirecrawlRequestError(
         `Firecrawl request failed (${response.status}): ${errorMessage}`,
         keyWideStatus,

@@ -52,16 +52,22 @@ export function extractBestEmail(content: string, website: string): string | nul
 }
 
 export function isValidEmailAddress(value: string): boolean {
-  const email = normalizeEmail(value.trim());
+  const email = normalizeEmailAddress(value);
   if (!email) return false;
   const domain = email.split("@")[1];
   return Boolean(domain && domain !== "mhtml.blink" && !domain.endsWith(".mhtml.blink"));
 }
 
+export function normalizeEmailAddress(value: string): string | null {
+  const decoded = decodePercentEncoding(value);
+  const candidate = decoded.replace(/^mailto:/i, "").trim();
+  return normalizeEmail(candidate);
+}
+
 function decodeEmailMarkup(content: string): string {
   const protectedEmails: string[] = [];
   const structuredEmails = extractStructuredEmails(content);
-  let decoded = content
+  let decoded = decodePercentEncoding(content)
     .replace(/\\u0040/gi, "@")
     .replace(/\\u002e/gi, ".")
     .replace(/\\x40/gi, "@")
@@ -161,8 +167,28 @@ function decodeCloudflareEmail(encoded: string): string | null {
 }
 
 function normalizeEmail(candidate: string): string | null {
-  const email = candidate.replace(/^[<("'`\s]+|[>"),;:!?'`\s]+$/g, "").toLowerCase();
-  return VALID_EMAIL_PATTERN.test(email) && email.length <= 254 ? email : null;
+  const email = candidate.replace(/^[<("'`*\s]+|[>"),;:!?`'*\s]+$/g, "").toLowerCase();
+  const localPart = email.split("@")[0];
+  return VALID_EMAIL_PATTERN.test(email) && email.length <= 254 && !/^\d+$/.test(localPart)
+    ? email
+    : null;
+}
+
+function decodePercentEncoding(value: string): string {
+  let decoded = value;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      decoded = decoded.replace(/%([0-9a-f]{2})/gi, (escape, hex: string) => {
+        const code = Number.parseInt(hex, 16);
+        return code <= 0x7f ? String.fromCharCode(code) : escape;
+      });
+    }
+  }
+  return decoded;
 }
 
 function getWebsiteHost(website: string): string {

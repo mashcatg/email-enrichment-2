@@ -1,3 +1,5 @@
+import { normalizeEmailAddress } from "./email";
+
 export function parseCsv(input: string): string[][] {
   const text = input.replace(/^\uFEFF/, "");
   const rows: string[][] = [];
@@ -51,4 +53,59 @@ export function stringifyCsv(rows: string[][]): string {
         .join(","),
     )
     .join("\r\n");
+}
+
+export function generateVerifiedCsv(enrichedCsv: string, verifiedCsv: string) {
+  const enrichedRows = parseCsv(enrichedCsv);
+  const verifiedRows = parseCsv(verifiedCsv);
+
+  if (enrichedRows.length < 2) {
+    throw new Error("The enriched CSV needs a header row and at least one data row.");
+  }
+  if (verifiedRows.length < 2) {
+    throw new Error("The verified CSV needs a header row and at least one data row.");
+  }
+
+  const emailColumn = (headers: string[]) =>
+    headers.findIndex((header) => header.trim().toLowerCase() === "email");
+  const enrichedEmailIndex = emailColumn(enrichedRows[0]);
+  const verifiedEmailIndex = emailColumn(verifiedRows[0]);
+  if (enrichedEmailIndex < 0) {
+    throw new Error('No "email" column was found in the enriched CSV.');
+  }
+  if (verifiedEmailIndex < 0) {
+    throw new Error('No "email" column was found in the verified CSV.');
+  }
+  const verifiedSafeToSendIndex = verifiedRows[0].findIndex(
+    (header) => header.trim().toLowerCase() === "safe to send",
+  );
+  if (verifiedSafeToSendIndex < 0) {
+    throw new Error('No "Safe to send" column was found in the verified CSV.');
+  }
+
+  const headers = [...enrichedRows[0]];
+  let safeToSendIndex = headers.findIndex(
+    (header) => header.trim().toLowerCase() === "safe to send",
+  );
+  if (safeToSendIndex < 0) {
+    safeToSendIndex = headers.length;
+    headers.push("Safe to send");
+  }
+
+  const verifiedEmails = new Set(
+    verifiedRows.slice(1)
+      .filter((row) => row[verifiedSafeToSendIndex]?.trim().toLowerCase() === "yes")
+      .map((row) => normalizeEmailAddress(row[verifiedEmailIndex] ?? ""))
+      .filter((email): email is string => Boolean(email)),
+  );
+  const rows = enrichedRows.slice(1).flatMap((row) => {
+    const email = normalizeEmailAddress(row[enrichedEmailIndex] ?? "");
+    if (!email || !verifiedEmails.has(email)) return [];
+
+    const matchedRow = Array.from({ length: headers.length }, (_, index) => row[index] ?? "");
+    matchedRow[safeToSendIndex] = "Yes";
+    return [matchedRow];
+  });
+
+  return { headers, rows };
 }

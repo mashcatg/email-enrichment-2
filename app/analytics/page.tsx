@@ -38,6 +38,8 @@ export default function AnalyticsPage() {
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [error, setError] = useState("");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isEnablingKeys, setIsEnablingKeys] = useState(false);
+  const [notice, setNotice] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -84,6 +86,27 @@ export default function AnalyticsPage() {
     }
   };
 
+  const enableAllKeys = async () => {
+    setIsEnablingKeys(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/analytics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "enable_all_keys" }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not enable Firecrawl keys.");
+      setNotice(`Enabled ${result.enabled} configured Firecrawl keys.`);
+      await refresh();
+    } catch (enableError) {
+      setError(enableError instanceof Error ? enableError.message : "Could not enable Firecrawl keys.");
+    } finally {
+      setIsEnablingKeys(false);
+    }
+  };
+
   if (!isAuthenticated) {
     return <main className="analytics-shell"><p>Sign in with the authorized account to view analytics. <a href="/">Go to sign in</a></p></main>;
   }
@@ -114,8 +137,15 @@ export default function AnalyticsPage() {
           <div className="stat-card"><span className="stat-label">FAILED ROWS</span><strong>{totals?.failed ?? "—"}</strong><span className="stat-caption">website-level failures</span></div>
         </section>
 
+        {notice && <p className="worker-summary" role="status">{notice}</p>}
         <section className="analytics-panel">
-          <div className="analytics-panel-heading"><h2>Firecrawl API key health</h2><span>Keys pause for authentication, billing, rate-limit, and service errors</span></div>
+          <div className="analytics-panel-heading">
+            <h2>Firecrawl API key health</h2>
+            <span>Only authentication or billing errors pause a key automatically.</span>
+            <button className="button button-quiet" onClick={() => void enableAllKeys()} disabled={isEnablingKeys || !data?.keys.some((key) => key.configured)}>
+              {isEnablingKeys ? "Enabling…" : "Enable all configured keys"}
+            </button>
+          </div>
           <div className="key-grid">
             {data?.keys.map((key) => (
               <article className={`key-card ${!key.configured ? "key-unconfigured" : `key-${key.state}`}`} key={key.key_index}>
