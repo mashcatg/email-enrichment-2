@@ -807,6 +807,7 @@ export default function Home() {
   };
 
   const successPercent = counts.total ? Math.round((counts.complete / counts.total) * 100) : 0;
+  const isJobQueued = jobStatus?.status === "queued";
   const displayedEmailCount = counts.complete + (
     jobStatus && project?.jobId === jobStatus.id && jobStatus.status !== "completed"
       ? jobStatus.found_count
@@ -950,8 +951,8 @@ export default function Home() {
 
             <div className="stats-grid">
               <div className="stat-card"><span className="stat-label">TOTAL ROWS</span><strong>{counts.total.toLocaleString()}</strong><span className="stat-caption">in your list</span></div>
-              <div className="stat-card"><span className="stat-label">EMAILS FOUND</span><strong>{displayedEmailCount.toLocaleString()}</strong><span className="stat-caption">{isEnriching ? "found so far · saved to CSV when complete" : "saved in this CSV, ready to export"}</span></div>
-              <div className="stat-card"><span className="stat-label">{isEnriching ? "REMAINING" : "TO ENRICH"}</span><strong>{remainingCount.toLocaleString()}</strong><span className="stat-caption">{isEnriching ? "in the active job" : "pending or retryable"}</span></div>
+              <div className="stat-card"><span className="stat-label">EMAILS FOUND</span><strong>{displayedEmailCount.toLocaleString()}</strong><span className="stat-caption">{isJobQueued ? "will update when this job starts" : isEnriching ? "found so far · saved to CSV when complete" : "saved in this CSV, ready to export"}</span></div>
+              <div className="stat-card"><span className="stat-label">{isEnriching ? "REMAINING" : "TO ENRICH"}</span><strong>{remainingCount.toLocaleString()}</strong><span className="stat-caption">{isJobQueued ? "in this queued job" : isEnriching ? "in the active job" : "pending or retryable"}</span></div>
               <div className="stat-card progress-stat">
                 <span className="stat-label">COMPLETION</span>
                 <strong>{jobStatus ? jobPercent : successPercent}<span className="percent-sign">%</span></strong>
@@ -965,11 +966,15 @@ export default function Home() {
                 <div>
                   <strong>{jobStatus?.status === "paused"
                     ? "Campaign paused"
-                    : isEnriching
-                      ? (jobStatus?.status === "waiting_for_keys" ? "Waiting for an active key" : "Enrichment running on server")
-                      : "Ready to find emails?"}</strong>
+                    : isJobQueued
+                      ? "Waiting in the job queue"
+                      : isEnriching
+                        ? (jobStatus?.status === "waiting_for_keys" ? "Waiting for an active key" : "Enrichment running on server")
+                        : "Ready to find emails?"}</strong>
                   <span>{hasIncompleteJob && jobStatus
-                    ? `${jobStatus?.completed_count ?? 0} of ${jobStatus?.total_count ?? 0} websites complete · safe to leave this page or turn off your computer.`
+                    ? isJobQueued
+                      ? `Queued behind other enrichment work · ${jobStatus.total_count.toLocaleString()} websites in this job.`
+                      : `${jobStatus.completed_count.toLocaleString()} of ${jobStatus.total_count.toLocaleString()} websites complete · safe to leave this page or turn off your computer.`
                     : `About ${estimatedMinutes} min minimum for the remaining rows at the configured shared request rate.`}</span>
                 </div>
               </div>

@@ -28,6 +28,7 @@ Set up a retention/cleanup policy if you do not want them retained.
    [`supabase/migrations/20261110160000_firecrawl_rate_limit_backoff.sql`](./supabase/migrations/20261110160000_firecrawl_rate_limit_backoff.sql),
    [`supabase/migrations/20261110170000_recover_paused_firecrawl_keys.sql`](./supabase/migrations/20261110170000_recover_paused_firecrawl_keys.sql),
    [`supabase/migrations/20261112140000_pause_enrichment_jobs.sql`](./supabase/migrations/20261112140000_pause_enrichment_jobs.sql),
+   [`supabase/migrations/20261119170000_fair_enrichment_job_queue.sql`](./supabase/migrations/20261119170000_fair_enrichment_job_queue.sql),
    and create the `mashcatg@gmail.com` user in Supabase Auth with a password.
    Disable public sign-ups; the application only authorizes this account. In
    Supabase Auth session settings, set inactivity and time-boxed session limits
@@ -166,6 +167,9 @@ The worker coordinates all configured keys with one shared rate limiter.
 When the authenticated app is open with a queued or running project, it also
 triggers the worker endpoint as a foreground fallback. Supabase Cron remains
 the durable background trigger when the browser is closed.
+When several enrichment jobs are queued, the worker rotates between them by
+least recently updated job so older work cannot keep a newer job at zero
+progress until the older job is entirely finished.
 When Firecrawl returns HTTP 429, the worker honors its retry/reset guidance,
 defers the shared request queue, and retries the row without pausing the key.
 Website-specific DNS, timeouts, blocked sites, unsupported sites, and
