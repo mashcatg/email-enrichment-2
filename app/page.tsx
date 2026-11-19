@@ -452,7 +452,6 @@ export default function Home() {
 
   useEffect(() => {
     if (
-      process.env.NODE_ENV !== "development" ||
       !isAuthenticated ||
       !project?.jobId ||
       !jobStatus ||
@@ -808,6 +807,11 @@ export default function Home() {
   };
 
   const successPercent = counts.total ? Math.round((counts.complete / counts.total) * 100) : 0;
+  const displayedEmailCount = counts.complete + (
+    jobStatus && project?.jobId === jobStatus.id && jobStatus.status !== "completed"
+      ? jobStatus.found_count
+      : 0
+  );
   const remainingCount = hasIncompleteJob && jobStatus
     ? Math.max(0, jobStatus.total_count - jobStatus.completed_count)
     : counts.pending;
@@ -946,7 +950,7 @@ export default function Home() {
 
             <div className="stats-grid">
               <div className="stat-card"><span className="stat-label">TOTAL ROWS</span><strong>{counts.total.toLocaleString()}</strong><span className="stat-caption">in your list</span></div>
-              <div className="stat-card"><span className="stat-label">EMAILS FOUND</span><strong>{counts.complete.toLocaleString()}</strong><span className="stat-caption">saved in this CSV, ready to export</span></div>
+              <div className="stat-card"><span className="stat-label">EMAILS FOUND</span><strong>{displayedEmailCount.toLocaleString()}</strong><span className="stat-caption">{isEnriching ? "found so far · saved to CSV when complete" : "saved in this CSV, ready to export"}</span></div>
               <div className="stat-card"><span className="stat-label">{isEnriching ? "REMAINING" : "TO ENRICH"}</span><strong>{remainingCount.toLocaleString()}</strong><span className="stat-caption">{isEnriching ? "in the active job" : "pending or retryable"}</span></div>
               <div className="stat-card progress-stat">
                 <span className="stat-label">COMPLETION</span>

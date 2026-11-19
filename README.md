@@ -163,6 +163,9 @@ as whitespace and Markdown `**` markers is removed before the email is saved.
 
 The worker coordinates all configured keys with one shared rate limiter.
 `FIRECRAWL_MAX_RPM` defaults to 8 and `FIRECRAWL_CONCURRENCY` defaults to 1.
+When the authenticated app is open with a queued or running project, it also
+triggers the worker endpoint as a foreground fallback. Supabase Cron remains
+the durable background trigger when the browser is closed.
 When Firecrawl returns HTTP 429, the worker honors its retry/reset guidance,
 defers the shared request queue, and retries the row without pausing the key.
 Website-specific DNS, timeouts, blocked sites, unsupported sites, and
