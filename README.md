@@ -29,7 +29,10 @@ Set up a retention/cleanup policy if you do not want them retained.
    [`supabase/migrations/20261110170000_recover_paused_firecrawl_keys.sql`](./supabase/migrations/20261110170000_recover_paused_firecrawl_keys.sql),
    [`supabase/migrations/20261112140000_pause_enrichment_jobs.sql`](./supabase/migrations/20261112140000_pause_enrichment_jobs.sql),
    and create the `mashcatg@gmail.com` user in Supabase Auth with a password.
-   Disable public sign-ups; the application only authorizes this account.
+   Disable public sign-ups; the application only authorizes this account. In
+   Supabase Auth session settings, set inactivity and time-boxed session limits
+   to match how long you need to stay signed in. The browser refreshes active
+   sessions automatically, but project-level session limits still apply.
 2. **Supabase Storage:** apply
    [`supabase/migrations/20261109000000_private_storage_bucket.sql`](./supabase/migrations/20261109000000_private_storage_bucket.sql)
    to create the private `enrichment-jobs` bucket. No Vercel Blob account or
@@ -97,6 +100,13 @@ fill in the Supabase and Firecrawl values, then run:
 npm install
 npm run dev
 ```
+
+The browser keeps its sign-in cookie for up to 400 days and refreshes the
+Supabase session when the app is active or returns to the foreground. This
+cookie lifetime cannot extend a shorter inactivity or time-boxed limit set in
+the Supabase project. If a session does expire, sign in again; the local
+project and server-side enrichment job are preserved and should resume without
+re-uploading the CSV.
 
 ## Find prospects with Apify
 

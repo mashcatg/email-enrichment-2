@@ -39,6 +39,7 @@ function prospectCell(item: Record<string, unknown>, ...keys: string[]) {
 export default function Home() {
   const [project, setProject] = useState<EnrichmentProject | null>(null);
   const projectRef = useRef<EnrichmentProject | null>(null);
+  const isAuthenticatedRef = useRef(false);
   const [authReady, setAuthReady] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loginPassword, setLoginPassword] = useState("");
@@ -80,35 +81,56 @@ export default function Home() {
     let active = true;
     try {
       const supabase = createSupabaseBrowserClient();
-      void (async () => {
+      let lastSessionCheck = 0;
+      const refreshAuthorization = async () => {
         try {
           const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
           if (!active) return;
           if (sessionError) throw sessionError;
           if (!sessionData.session) {
+            isAuthenticatedRef.current = false;
             setIsAuthenticated(false);
             setAuthError("");
-            setAuthReady(true);
             return;
           }
-          const { data, error } = await supabase.auth.getUser();
+          let { data, error } = await supabase.auth.getUser();
+          if (error) {
+            const refreshed = await supabase.auth.refreshSession();
+            if (refreshed.error) throw refreshed.error;
+            ({ data, error } = await supabase.auth.getUser());
+          }
           if (error) throw error;
-          setIsAuthenticated(data.user?.email?.toLowerCase() === ACCOUNT_EMAIL);
+          const authorized = data.user?.email?.toLowerCase() === ACCOUNT_EMAIL;
+          isAuthenticatedRef.current = authorized;
+          setIsAuthenticated(authorized);
           setAuthError("");
-          setAuthReady(true);
         } catch (error) {
           if (!active) return;
           setAuthError(error instanceof Error ? error.message : "Could not verify your login.");
-          setIsAuthenticated(false);
-          setAuthReady(true);
+          if (!isAuthenticatedRef.current) setIsAuthenticated(false);
+        } finally {
+          if (active) setAuthReady(true);
         }
-      })();
+      };
+      const checkWhenVisible = () => {
+        if (document.visibilityState !== "visible" || Date.now() - lastSessionCheck < 30_000) return;
+        lastSessionCheck = Date.now();
+        void refreshAuthorization();
+      };
+      lastSessionCheck = Date.now();
+      void refreshAuthorization();
+      document.addEventListener("visibilitychange", checkWhenVisible);
+      window.addEventListener("focus", checkWhenVisible);
       const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        setIsAuthenticated(session?.user.email?.toLowerCase() === ACCOUNT_EMAIL);
+        const authorized = session?.user.email?.toLowerCase() === ACCOUNT_EMAIL;
+        isAuthenticatedRef.current = authorized;
+        setIsAuthenticated(authorized);
         if (!session) setAuthError("");
       });
       return () => {
         active = false;
+        document.removeEventListener("visibilitychange", checkWhenVisible);
+        window.removeEventListener("focus", checkWhenVisible);
         subscription.unsubscribe();
       };
     } catch (error) {
@@ -132,6 +154,7 @@ export default function Home() {
         await supabase.auth.signOut();
         throw new Error(`Only ${ACCOUNT_EMAIL} is authorized.`);
       }
+      isAuthenticatedRef.current = true;
       setIsAuthenticated(true);
       setLoginPassword("");
     } catch (error) {
@@ -812,6 +835,7 @@ export default function Home() {
           </a>
           <h1>Welcome back</h1>
           <p>Sign in to your email enrichment workspace.</p>
+          <p>Your saved CSV and queued enrichment job are preserved in this browser. Sign back in to resume—do not upload the file again.</p>
           <label className="field-label" htmlFor="account-email">ACCOUNT</label>
           <input id="account-email" className="auth-input" value={ACCOUNT_EMAIL} readOnly />
           <label className="field-label" htmlFor="account-password">PASSWORD</label>
